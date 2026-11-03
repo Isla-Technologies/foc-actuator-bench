@@ -52,6 +52,11 @@ class ActuatorProfile:
     calibration_date: str = ""
     calibration_details: dict = field(default_factory=dict)
     use_calibration: bool = True
+    # The simulation model: the latest result of each test, and the robot it is for.
+    model_results: dict = field(default_factory=dict)   # test name -> result summary (with "date")
+    battery_voltage: float = 24.0     # V the robot's drivers run on
+    peak_current_a: float = 0.0       # A the robot's drivers may give for a moment (0 = max motor current)
+    temp_limit_c: float = 80.0        # °C the motor may reach (sets the continuous current)
 
     @property
     def kt_motor(self) -> float:
@@ -60,6 +65,10 @@ class ActuatorProfile:
     @property
     def has_calibration(self) -> bool:
         return bool(self.calibration_k_out)
+
+    @property
+    def robot_peak_current(self) -> float:
+        return self.peak_current_a if self.peak_current_a > 0 else self.max_current_a
 
     def validate(self) -> dict[str, str]:
         """Problems keyed by field name; empty when everything is valid."""
