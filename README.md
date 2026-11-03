@@ -1,8 +1,12 @@
 # ODrive Actuator Bench
 
-Measure the torque your **ODrive V3.6** actuator produces: live, while it works, and with automated
-**stall (peak torque)** and **holding torque** tests. Runs on **macOS** (Apple Silicon and Intel) and
-**Windows**. Includes a simulator, so you can try everything without hardware.
+Bench-test an actuator driven by an **ODrive V3.6**. Measure its torque live, while it works, and with
+automated **stall (peak torque)** and **holding torque** tests. Then measure everything a **robot
+simulator** needs to know about it: friction, rotor inertia, no-load and corner speed, backlash,
+gearbox stiffness and continuous current, exported in one file. Runs on **macOS** (Apple Silicon and
+Intel) and **Windows**. Includes a simulator, so you can try everything without hardware.
+
+Formerly *ODrive Torque Meter*: settings and data from it carry over on the first start.
 
 ![Measure screen during a stall test](docs/images/measure.png)
 
@@ -17,6 +21,9 @@ Measure the torque your **ODrive V3.6** actuator produces: live, while it works,
   speed or position control).
 - **Weight calibration**: hang known weights on a lever arm to measure the real torque per amp
   (corrects gearbox losses and an inexact motor constant).
+- **Simulation model**: tests that measure what a robot simulator needs, each set up and stopped
+  safely by the app, and an export of every value with where it came from. See
+  [Measuring an actuator for robot simulation](docs/simulation-model.md).
 - **Recording**: every sample to CSV (opens in Excel/Numbers), plus a results folder per test.
 - **Safety**: STOP button (Esc / Space), limits you set first, ODrive watchdog, motor off on exit.
 
@@ -153,6 +160,30 @@ Buttons: **Clear errors**, **Run motor calibration** (the output must be free to
 
 ![Calibration with the simulator](docs/images/calibration.png)
 
+### Simulation model
+
+The **Simulation model** tab measures what a robot simulator needs to know about the actuator, one
+test per tab:
+
+| Tab | Measures | The output must be |
+|---|---|---|
+| Friction | Coulomb friction and damping | free to turn through the travel |
+| Inertia | the inertia the rotor and gearbox add to the joint | free to swing ±20° |
+| No-load speed | no-load and corner speed at your battery voltage, motor back-EMF | free to spin |
+| Backlash | gearbox play and stiffness | clamped both ways |
+| Thermal | continuous current | blocked, as for the stall test |
+| Gear ratio | the real gear ratio | turned by hand, motor off |
+
+Each tab explains its setup, and each test stops by itself if the output does what it shouldn't
+(moves when it should be clamped, sticks when it should turn). Results are kept on the profile.
+**Overview and export** lists every value with where it came from (measured, calculated, from
+Setup, or not measured yet) and exports them as one JSON file for the simulator.
+
+![Simulation model overview](docs/images/model-overview.png)
+
+The full guide, with the order to run the tests, what each result means, how accurate it is and its
+limitations: **[Measuring an actuator for robot simulation](docs/simulation-model.md)**.
+
 ### Where your data goes
 
 Recordings and test results go to **Documents/ODrive Actuator Bench** (change it under
@@ -169,6 +200,8 @@ calibration, ODrive serial number…).
 - While the motor is on, the ODrive's **watchdog** is active. If the app freezes or the USB cable
   is pulled, the ODrive switches the motor off within about a second.
 - In **torque mode with the output free**, the actuator accelerates up to the speed limit.
+- Once started, the **Simulation model tests move the output by themselves**: the friction, inertia
+  and no-load speed tests turn it, the backlash and thermal tests push it against its clamp.
 - **Stalled motors heat up fast.** Keep stall holds to a few seconds and watch the temperature.
 - Settings the app changes on the ODrive (limits, control mode, watchdog) are put back when you
   disconnect. Nothing is saved permanently to the ODrive.
@@ -211,9 +244,13 @@ actuator_bench/
   acquisition.py       background worker: polling, torque, procedures, commands
   procedures.py        stall test, hold test, calibration sweep
   calibration.py       known-weight calibration math
+  model_tests.py       friction, inertia, no-load speed, backlash and thermal tests
+  identification.py    the fits behind them (friction, inertia, motor model, backlash, heating)
+  model_export.py      every measured value, with its source, as one simulation model
   torque.py            Kt, gear ratio, units, filters, statistics
   recorder.py, settings.py, diagnostics.py, cli.py
-  ui/                  PySide6 interface (setup, connect and measure pages, live charts)
+  ui/                  PySide6 interface (setup, connect and measure pages, live charts,
+                       the Simulation model tab and its result charts)
 tests/                 unit, protocol, end-to-end and GUI tests (all against the simulator)
 ```
 
