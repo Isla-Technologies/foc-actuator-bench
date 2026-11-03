@@ -5,6 +5,10 @@ firmware's property tree, state machine, position/velocity/torque cascade (inclu
 torque-mode velocity limiter and overspeed check), limits, watchdog and errors closely enough to
 exercise the whole app. The simulated actuator deliberately differs from its nominal datasheet
 values (Kt, gearbox efficiency) so the weight calibration has something real to find.
+
+The motor's back-EMF uses up the voltage the firmware can apply, so it tops out at a no-load
+speed; a clamped output winds up the gearbox through its backlash and stiffness; and friction,
+inertia and heating are there for the simulation-model tests to measure.
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, fields
 
-from ..odrive_api import CALIBRATION_STATES, AxisState, ControlMode, InputMode
+from ..odrive_api import CALIBRATION_STATES, MAX_PHASE_VOLTAGE_PER_BUS_VOLT, AxisState, ControlMode, InputMode
 from ..torque import KT_PER_KV
 from .base import Backend, PropertyUnavailable
 
@@ -27,7 +31,7 @@ SCENARIOS = {
     "free": "Nothing attached (output turns freely)",
     "wall": "Arm against a fixed object (stall test)",
     "lever": "Arm with a hanging weight (gravity load)",
-    "locked": "Output clamped (cannot move)",
+    "locked": "Output clamped both ways (backlash test)",
 }
 
 
@@ -45,6 +49,11 @@ class SimActuator:
     viscous_friction: float = 0.02    # N*m per rad/s at the output
     current_noise: float = 0.08       # A rms noise on Iq_measured
     phase_resistance: float = 0.06    # ohm
+    phase_inductance: float = 2.0e-5  # H
+    pole_pairs: int = 7
+    backlash_deg: float = 0.2         # output degrees of play in the gearbox (locked scenario)
+    gear_stiffness: float = 1500.0    # N*m/rad at the output once the play is taken up (locked scenario)
+    motor_thermistor: bool = True     # the motor's temperature sensor is wired and enabled
     supply_voltage: float = 24.0
     supply_resistance: float = 0.05   # ohm, causes bus sag under load
     odrive_kt_configured: bool = True  # False: torque_constant left at the 0.04 factory default
@@ -71,6 +80,11 @@ class SimActuator:
     @property
     def has_arm(self) -> bool:
         return self.scenario in ("wall", "lever")
+
+    @property
+    def flux(self) -> float:
+        """Back-EMF per motor rad/s (phase peak volts): torque = 1.5 * flux * Iq."""
+        return self.kt_true / 1.5
 
 
 class ManualClock:
@@ -100,6 +114,8 @@ _AXIS_CONFIG_DEFAULTS: list[tuple[str, object, type]] = [
     ("motor.config.current_lim", 10.0, float),
     ("motor.config.torque_lim", math.inf, float),
     ("motor.config.pole_pairs", 7, int),
+    ("motor.config.phase_resistance", 0.0, float),
+    ("motor.config.phase_inductance", 0.0, float),
     ("motor.config.motor_type", 0, int),
     ("motor.config.requested_current_range", 60.0, float),
     ("motor.config.calibration_current", 10.0, float),
@@ -254,6 +270,14 @@ class SimulatedODrive:
             if "current_lim" in changes:
                 self.axes[0].cfg["motor.config.current_lim"] = float(self.actuator.current_lim)
 
+    def turn_output_by_hand(self, output_turns: float, axis: int = 0) -> None:
+        """Turn the output like a hand would (only while the motor is off)."""
+        with self._lock:
+            self._advance()
+            ax = self.axes[axis]
+            if ax.state == AxisState.IDLE and ax.has_motor:
+                ax.pos += output_turns * self.actuator.gear_ratio
+
     def true_output_torque(self, axis: int = 0) -> float:
         a = self.actuator
         return a.kt_true * self.axes[axis].iq * a.gear_ratio * a.true_efficiency
@@ -281,6 +305,10 @@ class SimulatedODrive:
         a = self.actuator
         ax.cfg["motor.config.torque_constant"] = a.kt_nominal if a.odrive_kt_configured else 0.04
         ax.cfg["motor.config.current_lim"] = float(a.current_lim)
+        ax.cfg["motor.config.phase_resistance"] = float(a.phase_resistance)
+        ax.cfg["motor.config.phase_inductance"] = float(a.phase_inductance)
+        ax.cfg["motor.config.pole_pairs"] = int(a.pole_pairs)
+        ax.cfg["motor.motor_thermistor.config.enabled"] = bool(a.motor_thermistor)
 
     def _build_registry(self) -> None:
         reg = self._register
@@ -464,8 +492,13 @@ class SimulatedODrive:
             torque_cmd = self._controller(ax, dt)
         kt_cfg = float(cfg["motor.config.torque_constant"]) or 1e-9
         ax.iq_set = torque_cmd / kt_cfg if ax.state == AxisState.CLOSED_LOOP_CONTROL else 0.0
-        # current loop: first-order response (~0.5 ms)
+        # current loop: first-order response (~0.5 ms), within the voltage the bus allows
         ax.iq += (ax.iq_set - ax.iq) * (1.0 - math.exp(-dt / 0.0005))
+        if ax.state == AxisState.CLOSED_LOOP_CONTROL and ax.has_motor:
+            available = MAX_PHASE_VOLTAGE_PER_BUS_VOLT * self.vbus
+            back_emf = a.flux * ax.vel * TWO_PI
+            r = max(a.phase_resistance, 1e-6)
+            ax.iq = min(max(ax.iq, (-available - back_emf) / r), (available - back_emf) / r)
 
         if not ax.has_motor:
             return
@@ -551,7 +584,7 @@ class SimulatedODrive:
         omega = ax.vel / n * TWO_PI        # output speed [rad/s]
 
         if a.scenario == "locked":
-            ax.vel = 0.0
+            self._wind_up(ax, dt)
             return
 
         inertia = a.rotor_inertia * n * n + a.load_inertia
@@ -584,6 +617,28 @@ class SimulatedODrive:
                 theta_new, omega_new = -limit, max(0.0, omega_new)
 
         ax.pos = theta_new / TWO_PI * n
+        ax.vel = omega_new / TWO_PI * n
+
+    def _wind_up(self, ax: _SimAxis, dt: float) -> None:
+        """Output clamped: the motor turns through the gearbox's play, then twists its teeth."""
+        a = self.actuator
+        n = a.gear_ratio
+        theta = ax.pos / n * TWO_PI        # motor angle in output radians
+        omega = ax.vel / n * TWO_PI
+        inertia = a.rotor_inertia * n * n
+        play = math.radians(a.backlash_deg) / 2.0
+        twist = math.copysign(max(0.0, abs(theta) - play), theta)
+        damping = 0.6 * math.sqrt(a.gear_stiffness * inertia) if twist else 0.0
+        applied = a.kt_true * ax.iq * n * a.true_efficiency - a.gear_stiffness * twist - damping * omega
+        stiction = a.coulomb_friction
+        if abs(omega) < 1e-4 and abs(applied) <= stiction:
+            omega_new = 0.0
+        else:
+            direction = omega if abs(omega) >= 1e-4 else applied
+            omega_new = omega + (applied - math.copysign(stiction, direction)) / inertia * dt
+            if omega_new * omega < 0 and abs(applied) <= stiction:
+                omega_new = 0.0
+        ax.pos = (theta + omega_new * dt) / TWO_PI * n
         ax.vel = omega_new / TWO_PI * n
 
     def _thermal(self, ax: _SimAxis, dt: float) -> None:

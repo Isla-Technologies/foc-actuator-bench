@@ -119,3 +119,39 @@ def test_clear_errors():
     sim.call("clear_errors")
     assert sim.read("axis0.motor.error") == 0
     assert sim.read("axis0.error") == 0
+
+
+def test_back_emf_caps_the_speed_at_the_no_load_speed():
+    from actuator_bench.odrive_api import MAX_PHASE_VOLTAGE_PER_BUS_VOLT
+
+    sim, clock = make(scenario="free")
+    sim.write("axis0.controller.config.control_mode", int(ControlMode.VELOCITY))
+    sim.write("axis0.controller.config.vel_limit", 60.0)
+    sim.write("axis0.controller.input_vel", 50.0)
+    sim.write("axis0.requested_state", int(AxisState.CLOSED_LOOP_CONTROL))
+    run(sim, clock, 3.0)
+    no_load = MAX_PHASE_VOLTAGE_PER_BUS_VOLT * 24.0 / sim.actuator.flux / (2 * 3.141592653589793)
+    assert sim.read("axis0.current_state") == AxisState.CLOSED_LOOP_CONTROL
+    assert sim.read("axis0.encoder.vel_estimate") == pytest.approx(no_load, rel=0.03)
+    # The controller asks for more current than the voltage lets through.
+    assert sim.read("axis0.motor.current_control.Iq_setpoint") > 3 * sim.read("axis0.motor.current_control.Iq_measured")
+
+
+def test_clamped_output_shows_backlash_then_stiffness():
+    sim, clock = make(backlash_deg=0.4, gear_stiffness=1000.0)
+    angles = {}
+    for torque in (0.3, -0.3):
+        arm_torque_mode(sim, torque, vel_limit=50.0)
+        run(sim, clock, 0.5)
+        angles[torque] = sim.read("axis0.encoder.pos_estimate") / 9 * 360
+    output_torque = 0.3 * sim.actuator.true_k_out / sim.actuator.kt_nominal
+    twist_deg = output_torque / 1000.0 * 180 / 3.141592653589793
+    assert angles[0.3] - angles[-0.3] == pytest.approx(0.4 + 2 * twist_deg, abs=0.03)
+
+
+def test_output_can_be_turned_by_hand_while_the_motor_is_off():
+    sim, clock = make(scenario="free")
+    sim.turn_output_by_hand(2.0)
+    assert sim.read("axis0.encoder.pos_estimate") == pytest.approx(2.0 * 9)
+    assert sim.read("axis0.motor.config.phase_resistance") == pytest.approx(0.06)
+    assert sim.read("axis0.motor.motor_thermistor.config.enabled") is True

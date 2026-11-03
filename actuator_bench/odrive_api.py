@@ -7,11 +7,18 @@ firmware source. Only the subset this app needs is listed.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import IntEnum
 
 ODRIVE_USB_VID = 0x1209
 ODRIVE_USB_PIDS = (0x0D32,)  # ODrive v3.x running application firmware
+
+# The current controller scales its output to 80 % of the largest voltage vector space-vector
+# modulation can make (foc.cpp: 0.80 * sqrt(3)/2 of the 2/3 * vbus range), so each phase gets at
+# most 0.8 / sqrt(3) of the bus voltage (peak). Above that the motor can't push more current: this
+# is what sets its no-load speed.
+MAX_PHASE_VOLTAGE_PER_BUS_VOLT = 0.8 / math.sqrt(3)
 
 
 class AxisState(IntEnum):
@@ -252,6 +259,8 @@ class AxisPaths:
         self.current_lim = f"{m}.config.current_lim"
         self.torque_lim = f"{m}.config.torque_lim"
         self.pole_pairs = f"{m}.config.pole_pairs"
+        self.phase_resistance = f"{m}.config.phase_resistance"  # measured by the motor calibration
+        self.phase_inductance = f"{m}.config.phase_inductance"
         self.motor_type = f"{m}.config.motor_type"
         self.fet_temperature = f"{m}.fet_thermistor.temperature"
         self.motor_temperature = f"{m}.motor_thermistor.temperature"
@@ -299,7 +308,7 @@ class AxisPaths:
         """Configuration worth recording in debug reports."""
         return [
             self.torque_constant, self.current_lim, self.torque_lim, self.pole_pairs,
-            self.motor_type, self.encoder_cpr, self.control_mode, self.input_mode,
+            self.phase_resistance, self.phase_inductance, self.motor_type, self.encoder_cpr, self.control_mode, self.input_mode,
             self.vel_limit, self.vel_limit_tolerance, self.enable_vel_limit,
             self.enable_torque_mode_vel_limit, self.enable_overspeed_error,
             self.pos_gain, self.vel_gain, self.vel_integrator_gain, self.iq_filter_k,
