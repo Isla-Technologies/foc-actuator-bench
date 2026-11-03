@@ -1,5 +1,5 @@
 @echo off
-rem ODrive Torque Meter - start on Windows (double-click this file).
+rem ODrive Actuator Bench - start on Windows (double-click this file).
 rem The first run creates a private Python environment in ".venv" and installs what the app needs
 rem (needs internet, takes a few minutes). After that it starts right away.
 setlocal
@@ -45,7 +45,7 @@ if errorlevel 1 echo Note: the optional official odrive library was not installe
 copy /y requirements.txt .venv\installed-requirements.txt >nul
 
 :run
-".venv\Scripts\python.exe" -m torque_meter %*
+".venv\Scripts\python.exe" -m actuator_bench %*
 exit /b %errorlevel%
 
 :fail

@@ -13,12 +13,12 @@ import shiboken6  # noqa: E402
 
 @pytest.fixture
 def window(tmp_path, monkeypatch):
-    import torque_meter.settings as settings_module
+    import actuator_bench.settings as settings_module
 
     monkeypatch.setattr(settings_module, "config_dir", lambda: tmp_path / "config")
-    from torque_meter.settings import AppSettings
-    from torque_meter.ui.main_window import MainWindow
-    from torque_meter.ui.theme import apply_theme
+    from actuator_bench.settings import AppSettings
+    from actuator_bench.ui.main_window import MainWindow
+    from actuator_bench.ui.theme import apply_theme
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     apply_theme(app)

@@ -1,6 +1,6 @@
 import pytest
 
-from torque_meter.odrive_api import AxisPaths, AxisState, decode_errors, state_label
+from actuator_bench.odrive_api import AxisPaths, AxisState, decode_errors, state_label
 
 
 def test_decode_known_flags():

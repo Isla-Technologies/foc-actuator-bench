@@ -3,7 +3,7 @@ import math
 import numpy as np
 import pytest
 
-from torque_meter.torque import (
+from actuator_bench.torque import (
     TORQUE_UNITS,
     LowPass,
     TorqueModel,

@@ -32,9 +32,9 @@ jobs:
         run: python -m pytest -v
       - name: Command-line tools
         run: |
-          python -m torque_meter --version
-          python -m torque_meter info --connection simulator
-          python -m torque_meter monitor --connection simulator --kv 100 --gear 9 --seconds 1
+          python -m actuator_bench --version
+          python -m actuator_bench info --connection simulator
+          python -m actuator_bench monitor --connection simulator --kv 100 --gear 9 --seconds 1
       - name: Optional official odrive library installs
         continue-on-error: true
         run: |

@@ -2,8 +2,8 @@
 
 import pytest
 
-from torque_meter.backends.simulator import ManualClock, SimActuator, SimulatedODrive
-from torque_meter.odrive_api import AxisState, ControlMode
+from actuator_bench.backends.simulator import ManualClock, SimActuator, SimulatedODrive
+from actuator_bench.odrive_api import AxisState, ControlMode
 
 
 def make(scenario="locked", **kw):

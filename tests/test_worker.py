@@ -5,12 +5,12 @@ import math
 import numpy as np
 import pytest
 
-from torque_meter.backends.serial_backend import SerialBackend
-from torque_meter.backends.sim_serial import SimulatedSerialPort
-from torque_meter.backends.simulator import SimActuator
-from torque_meter.calibration import fit_calibration
-from torque_meter.odrive_api import AxisState, ControlMode
-from torque_meter.procedures import (
+from actuator_bench.backends.serial_backend import SerialBackend
+from actuator_bench.backends.sim_serial import SimulatedSerialPort
+from actuator_bench.backends.simulator import SimActuator
+from actuator_bench.calibration import fit_calibration
+from actuator_bench.odrive_api import AxisState, ControlMode
+from actuator_bench.procedures import (
     CalibrationSweep,
     CalibrationSweepParams,
     HoldTest,
@@ -18,7 +18,7 @@ from torque_meter.procedures import (
     StallTest,
     StallTestParams,
 )
-from torque_meter.samples import Limits
+from actuator_bench.samples import Limits
 
 
 def serial_backend(sim):

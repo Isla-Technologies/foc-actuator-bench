@@ -4,10 +4,10 @@ import math
 
 import pytest
 
-from torque_meter.backends.base import BackendError, PropertyUnavailable
-from torque_meter.backends.serial_backend import SerialBackend, format_value, frame_command, parse_number, xor_checksum
-from torque_meter.backends.sim_serial import SimulatedSerialPort
-from torque_meter.backends.simulator import ManualClock, SimActuator, SimulatedODrive
+from actuator_bench.backends.base import BackendError, PropertyUnavailable
+from actuator_bench.backends.serial_backend import SerialBackend, format_value, frame_command, parse_number, xor_checksum
+from actuator_bench.backends.sim_serial import SimulatedSerialPort
+from actuator_bench.backends.simulator import ManualClock, SimActuator, SimulatedODrive
 
 
 @pytest.fixture

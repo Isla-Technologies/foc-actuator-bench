@@ -1,5 +1,5 @@
 #!/bin/bash
-# ODrive Torque Meter - start on macOS.
+# ODrive Actuator Bench - start on macOS.
 #
 # Run it from Terminal:   bash start_mac.command
 # (or double-click it in Finder; if macOS blocks it, use the Terminal command above).
@@ -58,4 +58,4 @@ if ! cmp -s requirements.txt .venv/installed-requirements.txt; then
     cp requirements.txt .venv/installed-requirements.txt
 fi
 
-exec .venv/bin/python -m torque_meter "$@"
+exec .venv/bin/python -m actuator_bench "$@"

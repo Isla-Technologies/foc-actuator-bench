@@ -1,5 +1,5 @@
 #!/bin/bash
-# ODrive Torque Meter - start on Linux:   bash start_linux.sh
+# ODrive Actuator Bench - start on Linux:   bash start_linux.sh
 # Serial access needs your user in the "dialout" group:  sudo usermod -aG dialout $USER  (then log in again)
 
 cd "$(dirname "$0")" || exit 1
@@ -28,4 +28,4 @@ if ! cmp -s requirements.txt .venv/installed-requirements.txt; then
     cp requirements.txt .venv/installed-requirements.txt
 fi
 
-exec .venv/bin/python -m torque_meter "$@"
+exec .venv/bin/python -m actuator_bench "$@"

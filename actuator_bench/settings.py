@@ -14,7 +14,8 @@ from .torque import TORQUE_UNITS, TorqueModel, kt_from_kv
 
 log = logging.getLogger(__name__)
 
-APP_DIR_NAME = "ODrive Torque Meter"
+APP_DIR_NAME = "ODrive Actuator Bench"
+LEGACY_DIR_NAME = "ODrive Torque Meter"  # the app's name before 0.2
 
 
 def config_dir() -> Path:
@@ -29,6 +30,10 @@ def config_dir() -> Path:
 
 def default_data_dir() -> Path:
     return Path.home() / "Documents" / APP_DIR_NAME
+
+
+def legacy_settings_path() -> Path:
+    return config_dir().parent / LEGACY_DIR_NAME / "settings.json"
 
 
 @dataclass
@@ -164,6 +169,8 @@ def settings_path() -> Path:
 
 
 def load_settings(path: Path | None = None) -> AppSettings:
+    if path is None and not settings_path().exists() and legacy_settings_path().exists():
+        return _load_legacy()
     path = path or settings_path()
     if not path.exists():
         return AppSettings()
@@ -176,6 +183,16 @@ def load_settings(path: Path | None = None) -> AppSettings:
         except OSError:
             pass
         return AppSettings()
+
+
+def _load_legacy() -> AppSettings:
+    """First start after the rename: take over the old profiles, and keep using the old data folder."""
+    settings = load_settings(legacy_settings_path())
+    old_data = Path.home() / "Documents" / LEGACY_DIR_NAME
+    if not settings.data_dir and old_data.exists():
+        settings.data_dir = str(old_data)
+    log.info("Settings taken over from %s", legacy_settings_path())
+    return settings
 
 
 def save_settings(settings: AppSettings, path: Path | None = None) -> None:

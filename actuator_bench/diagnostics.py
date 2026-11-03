@@ -50,7 +50,7 @@ def setup_logging(debug: bool = False) -> Path:
     for handler in list(root.handlers):
         root.removeHandler(handler)
     formatter = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
-    path = log_dir() / "torque_meter.log"
+    path = log_dir() / "actuator_bench.log"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.handlers.RotatingFileHandler(path, maxBytes=1_000_000, backupCount=3, encoding="utf-8")

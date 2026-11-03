@@ -4,9 +4,9 @@ import math
 import numpy as np
 import pytest
 
-from torque_meter.recorder import COLUMNS, CsvRecorder, read_recording, save_test_result
-from torque_meter.samples import SAMPLE_FIELDS, SampleBatch
-from torque_meter.settings import ActuatorProfile, AppSettings, load_settings, save_settings
+from actuator_bench.recorder import COLUMNS, CsvRecorder, read_recording, save_test_result
+from actuator_bench.samples import SAMPLE_FIELDS, SampleBatch
+from actuator_bench.settings import ActuatorProfile, AppSettings, load_settings, save_settings
 
 
 def make_batch(n=5):
@@ -72,3 +72,17 @@ def test_corrupt_settings_fall_back_to_defaults(tmp_path):
     loaded = load_settings(path)
     assert loaded.profile().name == "My actuator"
     assert (tmp_path / "settings.broken.json").exists()
+
+
+def test_settings_from_before_the_rename_are_taken_over(tmp_path, monkeypatch):
+    import actuator_bench.settings as settings_module
+
+    monkeypatch.setattr(settings_module, "config_dir", lambda: tmp_path / "config" / "ODrive Actuator Bench")
+    monkeypatch.setattr(settings_module.Path, "home", lambda: tmp_path)
+    old = AppSettings()
+    old.upsert_profile(ActuatorProfile(name="Knee", gear_ratio=36))
+    save_settings(old, tmp_path / "config" / "ODrive Torque Meter" / "settings.json")
+    (tmp_path / "Documents" / "ODrive Torque Meter").mkdir(parents=True)
+    loaded = load_settings()
+    assert loaded.current_profile == "Knee"
+    assert loaded.data_path == tmp_path / "Documents" / "ODrive Torque Meter"

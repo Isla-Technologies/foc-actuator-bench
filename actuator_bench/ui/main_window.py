@@ -411,7 +411,7 @@ class MainWindow(QMainWindow):
         if not self._report_pending:
             return
         self._report_pending = False
-        default = Path.home() / "Desktop" / f"odrive-torque-meter-report-{timestamp()}.txt"
+        default = Path.home() / "Desktop" / f"odrive-actuator-bench-report-{timestamp()}.txt"
         if not default.parent.exists():
             default = Path.home() / default.name
         path, _ = QFileDialog.getSaveFileName(self, "Save debug report", str(default), "Text file (*.txt)")

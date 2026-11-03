@@ -1,4 +1,4 @@
-# ODrive Torque Meter
+# ODrive Actuator Bench
 
 Measure the torque your **ODrive V3.6** actuator produces: live, while it works, and with automated
 **stall (peak torque)** and **holding torque** tests. Runs on **macOS** (Apple Silicon and Intel) and
@@ -81,7 +81,7 @@ box.
 
 On the Connect page choose **Simulator (no hardware)**. "Arm against a fixed object" is set up for
 the stall test, and "Arm with a hanging weight" for the calibration. You can also start straight
-into it with `python -m torque_meter --sim`.
+into it with `python -m actuator_bench --sim`.
 
 ## Using the app
 
@@ -155,7 +155,7 @@ Buttons: **Clear errors**, **Run motor calibration** (the output must be free to
 
 ### Where your data goes
 
-Recordings and test results go to **Documents/ODrive Torque Meter** (change it under
+Recordings and test results go to **Documents/ODrive Actuator Bench** (change it under
 **File → Change data folder**). Each test creates a folder with `summary.json`, `data.csv` and a
 chart image. CSV files start with `#` lines listing the settings used (KV, gear ratio,
 calibration, ODrive serial number…).
@@ -177,7 +177,7 @@ calibration, ODrive serial number…).
 
 | Problem | What to do |
 |---|---|
-| "No ODrive serial port found" | Switch the ODrive's DC power on (USB doesn't power it). Try another cable or USB port. Run `python -m torque_meter ports` (inside `.venv`) to list ports. |
+| "No ODrive serial port found" | Switch the ODrive's DC power on (USB doesn't power it). Try another cable or USB port. Run `python -m actuator_bench ports` (inside `.venv`) to list ports. |
 | "didn't answer like an ODrive" | The ODrive's USB port may be set to another protocol. Use the **Official ODrive library** connection, or in odrivetool run `odrv0.config.usb_cdc_protocol = 3` then `odrv0.save_configuration()`. |
 | Official library: "could not claim interface" | Only one program can use that connection. Close odrivetool (the USB serial connection doesn't have this limit). |
 | Motor won't switch on | Look at the Connect checklist: clear errors, and make sure the motor is calibrated and the encoder is ready. |
@@ -191,10 +191,10 @@ calibration, ODrive serial number…).
 These never move the motor:
 
 ```
-python -m torque_meter ports                         # list serial ports, ODrives marked
-python -m torque_meter info                          # board, firmware, state, errors, configuration
-python -m torque_meter monitor --kv 100 --gear 9     # print live torque (Ctrl+C to stop)
-python -m torque_meter monitor --csv run.csv --seconds 30
+python -m actuator_bench ports                         # list serial ports, ODrives marked
+python -m actuator_bench info                          # board, firmware, state, errors, configuration
+python -m actuator_bench monitor --kv 100 --gear 9     # print live torque (Ctrl+C to stop)
+python -m actuator_bench monitor --csv run.csv --seconds 30
 ```
 
 Run them with the app's Python: `.venv/bin/python` on macOS/Linux, `.venv\Scripts\python` on
@@ -203,7 +203,7 @@ Windows. Add `--connection simulator` to try them without hardware.
 ## For developers
 
 ```
-torque_meter/
+actuator_bench/
   odrive_api.py        firmware 0.5.x property paths, enums, error codes with explanations
   backends/            serial_backend (ASCII over USB), native_backend (official odrive library),
                        simulator (virtual ODrive + actuator), sim_serial (fake serial port)
@@ -220,7 +220,7 @@ tests/                 unit, protocol, end-to-end and GUI tests (all against the
 ```
 python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
 .venv/bin/python -m pytest          # runs headless; set QT_QPA_PLATFORM=offscreen on CI
-.venv/bin/python -m torque_meter --sim
+.venv/bin/python -m actuator_bench --sim
 ```
 
 GitHub Actions runs the tests on macOS, Windows and Ubuntu (Python 3.10 and 3.13), and runs the

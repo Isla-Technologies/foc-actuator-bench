@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from torque_meter.acquisition import AcquisitionWorker, ConnectRequest, WorkerListener
-from torque_meter.backends.simulator import ManualClock, SimActuator, SimulatedODrive, SimulatorBackend
-from torque_meter.samples import Limits
-from torque_meter.torque import TorqueModel, kt_from_kv
+from actuator_bench.acquisition import AcquisitionWorker, ConnectRequest, WorkerListener
+from actuator_bench.backends.simulator import ManualClock, SimActuator, SimulatedODrive, SimulatorBackend
+from actuator_bench.samples import Limits
+from actuator_bench.torque import TorqueModel, kt_from_kv
 
 
 class RecordingListener(WorkerListener):

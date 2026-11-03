@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from torque_meter.calibration import G, CalibrationPoint, analyze_sweep, fit_calibration
+from actuator_bench.calibration import G, CalibrationPoint, analyze_sweep, fit_calibration
 
 
 def synthetic_sweep(k_out, mass, arm, friction_a=0.4, offset_a=0.2, noise=0.0, seed=0):

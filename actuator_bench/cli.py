@@ -24,7 +24,7 @@ def _add_connection_args(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="odrive-torque-meter",
+        prog="odrive-actuator-bench",
         description=f"{APP_NAME} {__version__}: measure the torque of an ODrive V3.6 actuator.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
