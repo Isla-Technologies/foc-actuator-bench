@@ -308,7 +308,8 @@ class AxisPaths:
         """Configuration worth recording in debug reports."""
         return [
             self.torque_constant, self.current_lim, self.torque_lim, self.pole_pairs,
-            self.phase_resistance, self.phase_inductance, self.motor_type, self.encoder_cpr, self.control_mode, self.input_mode,
+            self.phase_resistance, self.phase_inductance, self.motor_type, self.encoder_cpr,
+            self.control_mode, self.input_mode,
             self.vel_limit, self.vel_limit_tolerance, self.enable_vel_limit,
             self.enable_torque_mode_vel_limit, self.enable_overspeed_error,
             self.pos_gain, self.vel_gain, self.vel_integrator_gain, self.iq_filter_k,

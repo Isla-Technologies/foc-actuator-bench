@@ -22,7 +22,7 @@ from .backends.serial_backend import SerialBackend
 from .backends.sim_serial import SimulatedSerialPort
 from .backends.simulator import SimActuator, SimulatedODrive, SimulatorBackend
 from .device import ArmError, DeviceInfo, ODriveAxis, Readiness, SlowReading
-from .odrive_api import AxisState, ControlMode
+from .odrive_api import AxisPaths, AxisState, ControlMode
 from .procedures import Procedure, ProcedureError, ProcedureStatus
 from .samples import Limits, Sample, SampleBatch
 from .torque import TorqueModel
@@ -195,6 +195,24 @@ class _ProcedureContext:
         if self._w.armed and self._w._dev:
             self._w._dev.set_position(turns, vel_ff)
 
+    def set_velocity_turns(self, turns_per_s: float) -> None:
+        if self._w.armed and self._w._dev:
+            limit = self._w.limits.max_motor_speed
+            self._w._dev.set_velocity(max(-limit, min(limit, turns_per_s)))
+
+    @property
+    def paths(self) -> AxisPaths:
+        return self._w._require_device().p
+
+    def read_optional(self, paths: list[str]) -> list:
+        dev = self._w._dev
+        return dev.read_optional(paths) if dev else [None] * len(paths)
+
+    @property
+    def motor_thermistor(self) -> bool:
+        dev = self._w._dev
+        return bool(dev and dev.motor_thermistor_enabled)
+
     def describe_errors(self) -> str:
         slow = self._w.latest_slow
         if not slow or not slow.errors:
@@ -342,6 +360,10 @@ class AcquisitionWorker:
 
     def configure_simulator(self, **changes) -> None:
         self._queue(self._do_configure_sim, changes)
+
+    def turn_output_by_hand(self, output_turns: float) -> None:
+        """Simulator only: turn the output as a hand would."""
+        self._queue(lambda: self.sim.turn_output_by_hand(output_turns) if self.sim is not None else None)
 
     def request_snapshot(self) -> None:
         self._queue(self._do_snapshot)

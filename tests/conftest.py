@@ -53,9 +53,9 @@ class Rig:
     """A worker connected to a simulated ODrive, stepped manually with a fake clock."""
 
     def __init__(self, actuator: SimActuator, *, backend_factory=None, model: TorqueModel | None = None,
-                 limits: Limits | None = None, dt: float = 0.01):
+                 limits: Limits | None = None, dt: float = 0.01, step_s: float = 0.001):
         self.clock = ManualClock()
-        self.sim = SimulatedODrive(actuator, clock=self.clock, seed=3)
+        self.sim = SimulatedODrive(actuator, clock=self.clock, seed=3, step_s=step_s)
         self.backend = backend_factory(self.sim) if backend_factory else SimulatorBackend(self.sim)
         self.listener = RecordingListener()
         self.worker = AcquisitionWorker(self.listener, clock=self.clock, watchdog_timeout_s=1.0)

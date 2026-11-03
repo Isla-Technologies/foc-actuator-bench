@@ -17,7 +17,7 @@ import numpy as np
 
 from .calibration import analyze_sweep
 from .device import SlowReading
-from .odrive_api import AxisState, ControlMode
+from .odrive_api import AxisPaths, AxisState, ControlMode
 from .samples import Limits, Sample
 from .torque import TorqueModel, TorqueStats
 
@@ -52,11 +52,48 @@ class ProcedureContext(Protocol):
 
     def set_position_turns(self, turns: float, vel_ff: float = 0.0) -> None: ...
 
+    def set_velocity_turns(self, turns_per_s: float) -> None: ...
+
+    @property
+    def paths(self) -> AxisPaths: ...
+
+    def read_optional(self, paths: list[str]) -> list: ...
+
+    @property
+    def motor_thermistor(self) -> bool: ...
+
     def describe_errors(self) -> str: ...
 
 
 def _fet_temp(ctx: ProcedureContext) -> float:
     return ctx.latest_slow.fet_temp if ctx.latest_slow else math.nan
+
+
+def arm_for_torque(ctx: ProcedureContext, target_out: float, top_speed: float = 0.0) -> float:
+    """Arm in torque mode for up to ``target_out``; returns the speed limit used.
+
+    In torque mode the ODrive caps torque to (vel_limit - speed) * vel_gain, so the speed limit is
+    raised enough for the target at ``top_speed`` (motor turns/s; 0 for a blocked output). Callers
+    must watch the output's movement themselves.
+    """
+    target = abs(target_out)
+    current = ctx.model.current_for_output_torque(target)
+    if current > ctx.limits.max_current * 1.0001:
+        raise ProcedureError(
+            f"{target:.3g} N·m needs {current:.1f} A, above your {ctx.limits.max_current:.1f} A "
+            "current limit. Lower the target or raise the limit in Setup."
+        )
+    odrive_target = ctx.model.odrive_input_torque(target)
+    vel_limit = ctx.limits.max_motor_speed
+    limiter = True
+    if ctx.vel_gain and ctx.vel_gain > 0:
+        vel_limit = max(vel_limit, abs(top_speed) + 1.3 * odrive_target / ctx.vel_gain)
+    else:
+        limiter = False
+    ctx.arm(ControlMode.TORQUE, vel_limit=vel_limit,
+            max_current=min(ctx.limits.max_current, current * 1.2 + 0.5),
+            torque_mode_vel_limit=limiter)
+    return vel_limit
 
 
 class Procedure:
@@ -148,28 +185,10 @@ class StallTest(Procedure):
             raise ProcedureError("Ramp time must be positive and hold/ramp-down times not negative.")
         if p.max_movement_deg <= 0:
             raise ProcedureError("Allowed movement must be positive.")
-        target = abs(p.target_torque_out)
-        current = ctx.model.current_for_output_torque(target)
-        if current > ctx.limits.max_current * 1.0001:
-            raise ProcedureError(
-                f"{target:.3g} N·m needs {current:.1f} A, above your {ctx.limits.max_current:.1f} A "
-                "current limit. Lower the target or raise the limit in Setup."
-            )
         self.pos0 = sample.pos
         self.fet_start = _fet_temp(ctx)
-        # In torque mode the ODrive caps torque at standstill to vel_limit * vel_gain, so raise the
-        # speed limit enough for the target. The movement check protects against a free arm.
-        odrive_target = ctx.model.odrive_input_torque(target)
-        vel_limit = ctx.limits.max_motor_speed
-        limiter = True
-        if ctx.vel_gain and ctx.vel_gain > 0:
-            vel_limit = max(vel_limit, 1.3 * odrive_target / ctx.vel_gain)
-        else:
-            limiter = False
-        self.vel_limit_used = vel_limit
-        ctx.arm(ControlMode.TORQUE, vel_limit=vel_limit,
-                max_current=min(ctx.limits.max_current, current * 1.2 + 0.5),
-                torque_mode_vel_limit=limiter)
+        # The movement check in update() protects against a free arm.
+        self.vel_limit_used = arm_for_torque(ctx, p.target_torque_out)
         self.status.phase = "ramping up"
 
     def command_at(self, t: float) -> float:
