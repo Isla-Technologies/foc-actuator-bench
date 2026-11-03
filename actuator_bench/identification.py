@@ -39,10 +39,16 @@ class FrictionLevel:
     torque_backward: float    # mean torque moving backward [N*m]
     samples_forward: int
     samples_backward: int
+    noise_forward: float = 0.0    # N*m: standard error of torque_forward (0 = unknown)
+    noise_backward: float = 0.0
 
     @property
     def friction(self) -> float:
         return (self.torque_forward - self.torque_backward) / 2.0
+
+    @property
+    def friction_error(self) -> float:
+        return 0.5 * math.hypot(self.noise_forward, self.noise_backward)
 
     @property
     def bias(self) -> float:
@@ -60,33 +66,50 @@ class FrictionFit:
     bias: float               # N*m, cancelled out
     r_squared: float
     levels: list[FrictionLevel] = field(default_factory=list)
+    coulomb_error: float = math.nan   # N*m, one standard error
+    viscous_error: float = math.nan   # N*m per rad/s
 
     def friction_at(self, speed: float) -> float:
         return self.coulomb + self.viscous * abs(speed)
 
     def to_dict(self) -> dict:
         return {"coulomb_Nm": self.coulomb, "viscous_Nms_per_rad": self.viscous, "bias_Nm": self.bias,
+                "coulomb_error_Nm": self.coulomb_error, "viscous_error_Nms_per_rad": self.viscous_error,
                 "r_squared": self.r_squared, "levels": [level.to_dict() for level in self.levels]}
 
 
 def fit_friction(levels: list[FrictionLevel]) -> FrictionFit:
-    """Coulomb + viscous friction through the measured speeds (viscous never below zero)."""
+    """Coulomb + viscous friction through the measured speeds (viscous never below zero).
+
+    Each speed counts by how steady its readings were, and the result says how sure it is: one
+    standard error, from the readings' noise or from the scatter about the line, whichever is larger.
+    """
     if len({round(level.speed, 9) for level in levels}) < 2:
         raise ValueError("Friction needs at least two different speeds with steady samples.")
     speed = np.array([level.speed for level in levels])
     friction = np.array([level.friction for level in levels])
-    viscous, coulomb = np.polyfit(speed, friction, 1)
+    errors = np.array([level.friction_error for level in levels])
+    known = bool(np.all(errors > 0))
+    weights = 1.0 / errors ** 2 if known else np.ones_like(speed)
+    basis = np.column_stack([np.ones_like(speed), speed])
+    covariance = np.linalg.inv((basis.T * weights) @ basis)
+    coulomb, viscous = covariance @ (basis.T * weights) @ friction
     if viscous < 0:  # friction that falls with speed: keep the average, a simulator can't use negative damping
-        viscous, coulomb = 0.0, float(friction.mean())
-    predicted = coulomb + viscous * speed
-    ss_res = float(((friction - predicted) ** 2).sum())
+        coulomb, viscous = float(np.average(friction, weights=weights)), 0.0
+        covariance = np.array([[1.0 / weights.sum(), 0.0], [0.0, 0.0]])
+    residuals = friction - (coulomb + viscous * speed)
+    dof = len(levels) - 2
+    scatter = float((weights * residuals ** 2).sum()) / dof if dof > 0 else math.nan
+    scale = max(scatter, 1.0) if known and math.isfinite(scatter) else (1.0 if known else scatter)
     ss_tot = float(((friction - friction.mean()) ** 2).sum())
     return FrictionFit(
         coulomb=float(coulomb),
         viscous=float(viscous),
         bias=float(np.mean([level.bias for level in levels])),
-        r_squared=1.0 - ss_res / ss_tot if ss_tot > 1e-12 else 1.0,
+        r_squared=1.0 - float((residuals ** 2).sum()) / ss_tot if ss_tot > 1e-12 else 1.0,
         levels=list(levels),
+        coulomb_error=math.sqrt(covariance[0, 0] * scale) if math.isfinite(scale) else math.nan,
+        viscous_error=math.sqrt(covariance[1, 1] * scale) if math.isfinite(scale) else math.nan,
     )
 
 

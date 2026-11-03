@@ -56,6 +56,11 @@ def _mean(values) -> float:
     return float(np.mean(values)) if len(values) else math.nan
 
 
+def _standard_error(values) -> float:
+    """How far the mean of ``values`` may be off from noise alone."""
+    return float(np.std(values, ddof=1) / math.sqrt(len(values))) if len(values) > 1 else math.nan
+
+
 # --- Friction ----------------------------------------------------------------------------------
 
 @dataclass
@@ -148,7 +153,8 @@ class FrictionTest(Procedure):
         forward, backward = self._torques[1], self._torques[-1]
         speed = self.speeds[self._level]
         if len(forward) >= 5 and len(backward) >= 5:
-            self.levels.append(FrictionLevel(speed, _mean(forward), _mean(backward), len(forward), len(backward)))
+            self.levels.append(FrictionLevel(speed, _mean(forward), _mean(backward), len(forward), len(backward),
+                                             _standard_error(forward), _standard_error(backward)))
         else:
             self.skipped.append(speed)
         self._level += 1

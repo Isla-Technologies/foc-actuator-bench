@@ -138,3 +138,15 @@ def test_thermal_fit_flags_a_short_test():
     assert fit.heating_rate == pytest.approx(40 / 300, rel=0.05)
     with pytest.raises(ValueError):
         fit_thermal(t, np.full_like(t, 25.0), current=10.0)
+
+
+def test_friction_fit_says_how_sure_it_is():
+    rng = np.random.default_rng(4)
+    levels = []
+    for s in (0.2, 0.5, 1.0, 2.0, 4.0):
+        f = 0.8 + 0.12 * s
+        levels.append(FrictionLevel(s, f + rng.normal(0, 0.02), -f + rng.normal(0, 0.02), 40, 40, 0.02, 0.02))
+    fit = fit_friction(levels)
+    assert 0 < fit.coulomb_error < 0.05
+    assert abs(fit.coulomb - 0.8) < 3 * fit.coulomb_error
+    assert abs(fit.viscous - 0.12) < 3 * fit.viscous_error

@@ -115,10 +115,13 @@ def model_values(profile: ActuatorProfile) -> list[ModelValue]:
                              MEASURED if inertia is not None else MISSING, "inertia"))
 
     friction = r.get("friction", {})
-    for key, label, field, unit in (("frictionloss", "Friction (Coulomb)", "coulomb_Nm", "N·m"),
-                                    ("damping", "Damping (viscous friction)", "viscous_Nms_per_rad", "N·m·s/rad")):
-        value = friction.get(field)
-        values.append(ModelValue(key, label, value, unit, MEASURED if value is not None else MISSING, "friction"))
+    for key, label, field, error_field, unit in (
+            ("frictionloss", "Friction (Coulomb)", "coulomb_Nm", "coulomb_error_Nm", "N·m"),
+            ("damping", "Damping (viscous friction)", "viscous_Nms_per_rad", "viscous_error_Nms_per_rad", "N·m·s/rad")):
+        value, error = friction.get(field), friction.get(error_field)
+        note = f"± {error:.2g} {unit}" if error is not None and math.isfinite(error) else ""
+        values.append(ModelValue(key, label, value, unit, MEASURED if value is not None else MISSING, "friction",
+                                 note))
 
     backlash = r.get("backlash", {})
     play = backlash.get("backlash_deg")

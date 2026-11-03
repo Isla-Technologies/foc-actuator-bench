@@ -11,7 +11,7 @@ import json
 import math
 
 import numpy as np
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -51,6 +51,13 @@ from .tests_panel import _TestPanel
 from .widgets import NumberField, StatTile, form_grid, label, scrollable, section_title
 
 RPM_PER_RAD_S = 60.0 / (2.0 * math.pi)
+
+
+def with_error(value, error) -> str:
+    """``value ± error`` when the error is known."""
+    if error is None or not math.isfinite(error) or value is None:
+        return sig(value)
+    return f"{sig(value)} ± {sig(error, 2)}"
 
 
 def sig(value, digits: int = 3) -> str:
@@ -187,11 +194,19 @@ class FrictionPanel(_ModelTestPanel):
 
     def show_values(self, r: dict) -> None:
         friction, damping, fit, used = self.tiles
-        friction.set(sig(r.get("coulomb_Nm")))
-        damping.set(sig(r.get("viscous_Nms_per_rad")))
+        friction.set(with_error(r.get("coulomb_Nm"), r.get("coulomb_error_Nm")))
+        damping.set(with_error(r.get("viscous_Nms_per_rad"), r.get("viscous_error_Nms_per_rad")))
         fit.set(sig(r.get("r_squared"), 4))
         levels = r.get("levels") or []
         used.set(f"{len(levels)} of {len(levels) + len(r.get('skipped_speeds_rad_s') or [])}" if levels else "—")
+
+    def show_result(self, result: dict) -> None:
+        super().show_result(result)
+        value, error = result.get("coulomb_Nm"), result.get("coulomb_error_Nm")
+        if value and error and math.isfinite(error) and error > 0.2 * abs(value):
+            self.message.setText(self.message.text() + "\n▲ The ± is large next to the friction: the readings are "
+                                 "noisy for this little friction. Allow more travel per pass, or raise the sample "
+                                 "rate in Setup, so each speed collects more readings.")
 
     def show_chart(self, r: dict) -> None:
         levels = r.get("levels") or []
@@ -500,7 +515,7 @@ class GearRatioPanel(QWidget):
         self.sim_note = label("", "muted", wrap=True)
         root.addWidget(self.sim_note)
         grid = form_grid()
-        self.turns = NumberField(1, 100, 1, decimals=0, step=1, suffix="turns")
+        self.turns = NumberField(1, 100, 1, decimals=0, step=1)
         grid.addWidget(label("Output turns"), 0, 0)
         grid.addWidget(self.turns, 0, 1)
         root.addLayout(grid)
@@ -593,7 +608,7 @@ class GearRatioPanel(QWidget):
             return
         ratio = motor / output
         self.start_pos = None
-        self.live.setText(f"✔ {motor:.3f} motor turns for {output:g} output turns.")
+        self.live.setText(f"✔ {motor:.3f} motor turns for {output:g} output turn{'' if output == 1 else 's'}.")
         self._show(ratio)
         self._update()
         self.measured.emit({"ratio": ratio, "output_turns": output, "motor_turns": motor})
@@ -654,7 +669,7 @@ class OverviewPanel(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
-        self.table.setMinimumHeight(360)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         root.addWidget(self.table)
 
         row = QHBoxLayout()
@@ -691,7 +706,7 @@ class OverviewPanel(QWidget):
         self.table.setRowCount(len(values))
         for i, v in enumerate(values):
             if v.known:
-                result = f"{sig(v.value, 4)} {v.unit}".replace(" : 1", ": 1")
+                result = f"{sig(v.value, 4)} {v.unit}"
                 if v.unit == "rad/s":
                     result += f"  ({v.value * RPM_PER_RAD_S:.3g} rpm)"
             else:
@@ -699,6 +714,9 @@ class OverviewPanel(QWidget):
             where = SOURCE_TEXT[v.source] + (f": {v.note}" if v.note else "")
             for col, text in enumerate((f"{v.label}  ({v.key})", result, where, TESTS.get(v.test, v.test))):
                 self.table.setItem(i, col, QTableWidgetItem(text))
+        # Every row shows: the tab scrolls, not the table.
+        rows = sum(self.table.rowHeight(i) for i in range(self.table.rowCount()))
+        self.table.setFixedHeight(self.table.horizontalHeader().height() + rows + 2 * self.table.frameWidth())
         measured = sum(v.source in (MEASURED, CALCULATED) for v in values)
         self.status.setText(f"{measured} of {len(values)} values come from measurements. "
                             + ("Every value is measured." if measured == len(values)
