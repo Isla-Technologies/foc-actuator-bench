@@ -96,11 +96,13 @@ def phasor(t: np.ndarray, x: np.ndarray, frequency: float, harmonics: int = 9) -
     """Complex amplitude X of x(t) ≈ Re(X e^(jωt)) + offset, by least squares (any sample spacing).
 
     Harmonics up to ``harmonics`` are fitted alongside, so friction's square-wave shape can't leak
-    into the fundamental when the samples aren't evenly spaced.
+    into the fundamental when the samples aren't evenly spaced, and so is a slow quadratic drift.
     """
     w = TWO_PI * frequency
     t = np.asarray(t, dtype=float)
-    columns = [np.cos(w * t), np.sin(w * t), np.ones_like(t)]
+    span = max(float(np.ptp(t)), 1e-9) if t.size else 1.0
+    drift = (t - t.mean()) / span if t.size else t
+    columns = [np.cos(w * t), np.sin(w * t), np.ones_like(t), drift, drift * drift]
     for k in range(2, harmonics + 1):
         columns += [np.cos(k * w * t), np.sin(k * w * t)]
     coefficients, *_ = np.linalg.lstsq(np.column_stack(columns), np.asarray(x, dtype=float), rcond=None)
@@ -262,12 +264,14 @@ class BacklashFit:
     stiffness_backward: float
     hysteresis: float         # rad: raw width of the loop around zero torque
     max_torque: float         # N*m reached
+    center: float = 0.0       # rad: middle of the play, from where the test started
 
     def to_dict(self) -> dict:
         return {"backlash_deg": math.degrees(self.backlash), "stiffness_Nm_per_rad": self.stiffness,
                 "stiffness_forward_Nm_per_rad": self.stiffness_forward,
                 "stiffness_backward_Nm_per_rad": self.stiffness_backward,
-                "hysteresis_deg": math.degrees(self.hysteresis), "max_torque_Nm": self.max_torque}
+                "hysteresis_deg": math.degrees(self.hysteresis), "max_torque_Nm": self.max_torque,
+                "center_deg": math.degrees(self.center)}
 
 
 def fit_backlash(angle: np.ndarray, torque: np.ndarray, rising: np.ndarray | None = None,
@@ -314,6 +318,7 @@ def fit_backlash(angle: np.ndarray, torque: np.ndarray, rising: np.ndarray | Non
         stiffness_backward=1.0 / slopes[1],
         hysteresis=hysteresis,
         max_torque=top,
+        center=(intercepts[0] + intercepts[1]) / 2.0,
     )
 
 

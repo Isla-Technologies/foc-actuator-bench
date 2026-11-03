@@ -136,7 +136,7 @@ class FrictionTest(Procedure):
         p = self.p
         speed = self.speeds[self._level]
         t_pass = t - self._pass_t0
-        if t_pass >= p.settle_s and abs(speed_now - self._dir * speed) <= 0.15 * speed + 0.01:
+        if t_pass >= p.settle_s and abs(speed_now - self._dir * speed) <= 0.05 * speed + 0.01:
             self._torques[self._dir].append(sample.torque_out)
         if self._dir > 0:
             if angle >= math.radians(p.travel_deg) or t_pass >= p.max_pass_s:
@@ -203,7 +203,7 @@ class InertiaTest(Procedure):
     all of it. (Position targets sent at the sample rate would move in steps, and the torque kicks
     from those steps fall between samples and bias the result.) The amplitude is adjusted each cycle
     until the output swings about as far as asked, then held for the measured cycles. A weak
-    centring spring keeps the output from wandering; it is part of the measured torque.
+    centring spring and damper keep the output from wandering; they are part of the measured torque.
     """
 
     name = "Inertia test"
@@ -283,7 +283,7 @@ class InertiaTest(Procedure):
             data["speed"].append(out_speed(ctx, sample.vel))
             data["torque"].append(sample.torque_out)
         self._last_t = t
-        command = self._command(t, angle)
+        command = self._command(t, angle, out_speed(ctx, sample.vel))
         ctx.set_torque_out(command)
         s = self.series
         s["t"].append(t)
@@ -293,8 +293,10 @@ class InertiaTest(Procedure):
         self.status.phase = f"{self._stage} at {frequency:.2g} Hz"
         self.status.progress = min(0.99, t / self._total)
 
-    def _command(self, t: float, angle: float) -> float:
-        """The sinusoid (faded in and out at the ends of each frequency) plus the centring spring."""
+    def _command(self, t: float, angle: float, speed: float) -> float:
+        """The sinusoid (faded in and out at the ends of each frequency), centred by a weak spring and
+        damper. A sinusoid started from rest pushes the output off to one side; with little friction
+        it would wander away in a slow swing, which the damper settles."""
         frequency, target = self.segments[self._index]
         x = (t - self._t0) * frequency - self._cycle
         envelope = 1.0
@@ -303,7 +305,9 @@ class InertiaTest(Procedure):
         elif self._stage == "fade-out":
             envelope = 1.0 - (3 * x * x - 2 * x ** 3)
         spring = 0.1 * self._amplitude / target
-        return envelope * self._amplitude * math.sin(TWO_PI * frequency * (t - self._t0)) - spring * angle
+        damper = 0.3 * self._amplitude / (TWO_PI * frequency * target)
+        sinusoid = envelope * self._amplitude * math.sin(TWO_PI * frequency * (t - self._t0))
+        return sinusoid - spring * angle - damper * speed
 
     def _end_cycle(self, ctx: ProcedureContext, sample: Sample) -> None:
         frequency, target = self.segments[self._index]
