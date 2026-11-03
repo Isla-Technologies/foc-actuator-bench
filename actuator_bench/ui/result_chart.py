@@ -84,7 +84,7 @@ class ResultChart(QWidget):
         self._x, self._y = np.empty(0), np.empty(0)
 
     def show(self, x, y, *, x_label: str, y_label: str, x_unit: str = "", y_unit: str = "",
-             fit_x=None, fit_y=None, as_points: bool = False) -> None:
+             fit_x=None, fit_y=None, as_points: bool = False, from_zero: bool = False) -> None:
         """Measured ``x, y`` as points or a line, the fit as a gray line, both axes titled."""
         self.clear()
         self._axis_values(True)
@@ -100,6 +100,13 @@ class ResultChart(QWidget):
         self._x, self._y, self._units = x, y, (x_unit, y_unit)
         self.plot.enableAutoRange()
         self.plot.autoRange(padding=0.08)
+        if from_zero:  # a zoomed axis would make a few percent of scatter look like a trend
+            values = np.concatenate([y[np.isfinite(y)]] + ([np.asarray(fit_y, dtype=float)] if fit_y is not None else []))
+            values = values[np.isfinite(values)]
+            if values.size:
+                low, high = min(0.0, float(values.min())), max(0.0, float(values.max()))
+                pad = 0.08 * ((high - low) or 1.0)
+                self.plot.setYRange(low - (pad if low < 0 else 0.0), high + pad, padding=0)
 
     def _mouse_moved(self, pos) -> None:
         if not self._x.size or not self.view.sceneBoundingRect().contains(pos):

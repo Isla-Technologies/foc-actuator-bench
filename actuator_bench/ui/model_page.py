@@ -205,7 +205,7 @@ class FrictionPanel(_ModelTestPanel):
             fit_x = np.linspace(0.0, max(speed) * 1.05, 50)
             fit_y = r["coulomb_Nm"] + r["viscous_Nms_per_rad"] * fit_x
         self.chart.show(speed, friction, x_label="Output speed (rad/s)", y_label="Friction torque (N·m)",
-                        x_unit="rad/s", y_unit="N·m", fit_x=fit_x, fit_y=fit_y, as_points=True)
+                        x_unit="rad/s", y_unit="N·m", fit_x=fit_x, fit_y=fit_y, as_points=True, from_zero=True)
 
 
 # --- Inertia -----------------------------------------------------------------------------------
@@ -272,7 +272,7 @@ class InertiaPanel(_ModelTestPanel):
         fit_x = np.linspace(min(frequency) * 0.9, max(frequency) * 1.1, 50)
         fit_y = r["inertia_kgm2"] - r["spring_Nm_per_rad"] / (2 * math.pi * fit_x) ** 2
         self.chart.show(frequency, apparent, x_label="Frequency (Hz)", y_label="Inertia (kg·m²)", x_unit="Hz",
-                        y_unit="kg·m²", fit_x=fit_x, fit_y=fit_y, as_points=True)
+                        y_unit="kg·m²", fit_x=fit_x, fit_y=fit_y, as_points=True, from_zero=True)
 
 
 # --- Speed -------------------------------------------------------------------------------------
