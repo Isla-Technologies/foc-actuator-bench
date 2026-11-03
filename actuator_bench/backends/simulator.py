@@ -271,11 +271,11 @@ class SimulatedODrive:
                 self.axes[0].cfg["motor.config.current_lim"] = float(self.actuator.current_lim)
 
     def turn_output_by_hand(self, output_turns: float, axis: int = 0) -> None:
-        """Turn the output like a hand would (only while the motor is off)."""
+        """Turn the output like a hand would (only while the motor is off and nothing holds the output)."""
         with self._lock:
             self._advance()
             ax = self.axes[axis]
-            if ax.state == AxisState.IDLE and ax.has_motor:
+            if ax.state == AxisState.IDLE and ax.has_motor and self.actuator.scenario in ("free", "lever"):
                 ax.pos += output_turns * self.actuator.gear_ratio
 
     def true_output_torque(self, axis: int = 0) -> float:

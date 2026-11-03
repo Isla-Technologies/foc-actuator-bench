@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -208,3 +209,13 @@ def hline() -> QFrame:
     line.setFrameShape(QFrame.HLine)
     line.setStyleSheet(f"color: {theme.BORDER}; background: {theme.BORDER}; max-height: 1px;")
     return line
+
+
+def scrollable(widget: QWidget) -> QScrollArea:
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setFrameShape(QScrollArea.NoFrame)
+    area.setStyleSheet("QScrollArea { background: transparent; }")
+    area.viewport().setAutoFillBackground(False)
+    area.setWidget(widget)
+    return area

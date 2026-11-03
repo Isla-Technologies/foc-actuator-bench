@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from .. import APP_NAME, __version__
 from ..acquisition import AcquisitionWorker, ConnectionStatus
 from ..diagnostics import build_report, log_dir
+from ..model_export import record_result
 from ..procedures import ProcedureStatus
 from ..recorder import CsvRecorder, save_test_result, timestamp
 from ..settings import ActuatorProfile, AppSettings, save_settings
@@ -191,6 +192,8 @@ class MainWindow(QMainWindow):
         m.open_data_folder.connect(self.open_data_folder)
         m.clear_errors_requested.connect(self.worker.clear_errors)
         m.calibration.calibration_saved.connect(self._calibration_saved)
+        m.model.result_measured.connect(self._record_model_result)
+        m.model.profile_values_changed.connect(self._update_profile)
 
     # --- navigation ------------------------------------------------------------------------
     def go_to(self, step: int) -> None:
@@ -295,8 +298,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "ODrive", text)
 
     def _on_procedure(self, status: ProcedureStatus) -> None:
-        panels = {p.procedure_name: p for p in (self.measure_page.stall, self.measure_page.hold,
-                                                self.measure_page.calibration)}
+        m = self.measure_page
+        panels = {p.procedure_name: p for p in (m.stall, m.hold, m.calibration, *m.model.test_panels)}
         panel = panels.get(status.name)
         if panel is None:
             return
@@ -305,12 +308,17 @@ class MainWindow(QMainWindow):
         panel.show_status(status)
         if status.done and status.result and status.name != "Calibration sweep":
             self._save_result(status, panel)
+            test = getattr(panel, "test_key", "")
+            if status.success and test:
+                self._record_model_result(test, status.result)
 
     def _save_result(self, status: ProcedureStatus, panel) -> None:
         slug = status.name.lower().replace(" ", "_")
         try:
             folder = save_test_result(self.settings.data_path, slug, status.result, self._metadata())
             self.measure_page.plots.save_image(str(folder / "chart.png"))
+            if hasattr(panel, "chart"):
+                panel.chart.save_image(str(folder / "result.png"))
         except OSError as exc:
             panel.message.setText(panel.message.text() + f"\nCould not save the results: {exc}")
             return
@@ -382,6 +390,19 @@ class MainWindow(QMainWindow):
             save_test_result(self.settings.data_path, "calibration", {"test": "calibration", **details}, self._metadata())
         except OSError as exc:
             log.warning("Could not save the calibration summary: %s", exc)
+
+    # --- simulation model ------------------------------------------------------------------
+    def _record_model_result(self, test: str, result: dict) -> None:
+        record_result(self.profile, test, result)
+        self._update_profile({"model_results": self.profile.model_results})
+
+    def _update_profile(self, values: dict) -> None:
+        """Keep values edited outside Setup (the simulation model's) on the profile, and save them."""
+        self.setup_page.update_hidden(**values)
+        self.profile = self.setup_page.current_profile()
+        self.settings.upsert_profile(self.profile)
+        save_settings(self.settings)
+        self.measure_page.model.set_profile(self.profile, self.kt_odrive)
 
     # --- STOP, reports, misc ---------------------------------------------------------------
     def emergency_stop(self) -> None:

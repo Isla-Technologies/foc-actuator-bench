@@ -27,21 +27,12 @@ from ..torque import TORQUE_UNITS, LowPass, TorqueStats
 from .calibration_panel import CalibrationPanel
 from .control_panel import ControlPanel
 from .live_plot import LivePlots, RingBuffer
+from .model_page import ModelPage
 from .tests_panel import HoldTestPanel, StallTestPanel
-from .widgets import HeroReadout, StatTile, StatusPill, card, fixed, fmt, label
+from .widgets import HeroReadout, StatTile, StatusPill, card, fixed, fmt, label, scrollable
 
 BUFFER_SECONDS = 60
 MAX_RATE_HZ = 500
-
-
-def _scrollable(widget: QWidget) -> QScrollArea:
-    area = QScrollArea()
-    area.setWidgetResizable(True)
-    area.setFrameShape(QScrollArea.NoFrame)
-    area.setStyleSheet("QScrollArea { background: transparent; }")
-    area.viewport().setAutoFillBackground(False)
-    area.setWidget(widget)
-    return area
 
 
 class MeasurePage(QWidget):
@@ -92,7 +83,9 @@ class MeasurePage(QWidget):
         self.log_view.setMaximumBlockCount(2000)
         for widget, title in ((self.control, "Manual control"), (self.stall, "Stall test (peak torque)"),
                               (self.hold, "Hold test"), (self.calibration, "Calibration")):
-            self.tabs.addTab(_scrollable(widget), title)
+            self.tabs.addTab(scrollable(widget), title)
+        self.model = ModelPage(worker, settings)
+        self.tabs.addTab(self.model, "Simulation model")
         self.tabs.addTab(self.log_view, "Log")
         splitter.addWidget(self.tabs)
         splitter.setStretchFactor(0, 3)
@@ -207,7 +200,7 @@ class MeasurePage(QWidget):
         self.hero.note.setText(f"From {source} · {model.k_out:.4f} N·m/A"
                                + (f" · smoothed {smoothing:g} ms" if smoothing else ""))
         self.lowpass = LowPass(smoothing / 1000.0)
-        for panel in (self.control, self.stall, self.hold, self.calibration):
+        for panel in (self.control, self.stall, self.hold, self.calibration, self.model):
             panel.set_profile(profile, kt_odrive)
 
     def set_connection(self, connected: bool, info=None, is_simulator: bool = False, scenario: str = "") -> None:
@@ -226,6 +219,7 @@ class MeasurePage(QWidget):
         self.stall.set_connected(connected)
         self.hold.set_connected(connected)
         self.calibration.set_connected(connected, is_simulator, scenario)
+        self.model.set_connected(connected, is_simulator, scenario)
 
     # --- live data -------------------------------------------------------------------------
     def add_batch(self, batch: SampleBatch) -> None:
@@ -237,6 +231,7 @@ class MeasurePage(QWidget):
         self.stats.add(batch["t"], filtered)
         self.control.set_latest_angle(float(batch["angle_out_deg"][-1]))
         self.calibration.set_latest_position(float(batch["pos"][-1]))
+        self.model.set_latest_position(float(batch["pos"][-1]))
 
     def set_slow(self, slow: SlowReading) -> None:
         self.slow = slow
@@ -257,12 +252,14 @@ class MeasurePage(QWidget):
         self.armed = armed
         self.control.set_armed(armed, mode)
         self.calibration.set_armed(armed, mode)
+        self.model.set_armed(armed)
 
     def set_busy(self, busy: bool) -> None:
         self.control.set_busy(busy)
         self.stall.set_busy(busy)
         self.hold.set_busy(busy)
         self.calibration.set_busy(busy)
+        self.model.set_busy(busy)
 
     def show_message(self, level: str, text: str) -> None:
         stamp = time.strftime("%H:%M:%S")

@@ -316,6 +316,11 @@ class SetupPage(QWidget):
         self.use_calibration.setChecked(True)
         self._changed()
 
+    def update_hidden(self, **values) -> None:
+        """Profile values edited outside this page (the simulation model's)."""
+        for key, value in values.items():
+            setattr(self._profile, key, copy.deepcopy(value))
+
     # --- validation ------------------------------------------------------------------------
     def _changed(self, *_args) -> None:
         if self._loading:
