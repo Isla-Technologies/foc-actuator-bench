@@ -197,7 +197,7 @@ def simulation_model(profile: ActuatorProfile) -> dict:
         extra["backlash_deg"] = math.degrees(found["backlash"].value)
 
     return {
-        "format": "odrive-actuator-bench/simulation-model",
+        "format": "odrive-actuator-bench/simulation-model",  # the app's name in 0.2, kept so readers still know it
         "version": 1,
         "actuator": profile.name,
         "created": datetime.now().isoformat(timespec="seconds"),

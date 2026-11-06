@@ -28,7 +28,7 @@ def _add_connection_args(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="odrive-actuator-bench",
+        prog="foc-actuator-bench",
         description=f"{APP_NAME} {__version__}: measure the torque of an actuator on an ODrive V3.6 or a "
                     "SimpleFOC board.",
     )

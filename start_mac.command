@@ -1,5 +1,5 @@
 #!/bin/bash
-# ODrive Actuator Bench - start on macOS.
+# FOC Actuator Bench - start on macOS.
 #
 # Run it from Terminal:   bash start_mac.command
 # (or double-click it in Finder; if macOS blocks it, use the Terminal command above).

@@ -1,5 +1,5 @@
 @echo off
-rem ODrive Actuator Bench - start on Windows (double-click this file).
+rem FOC Actuator Bench - start on Windows (double-click this file).
 rem The first run creates a private Python environment in ".venv" and installs what the app needs
 rem (needs internet, takes a few minutes). After that it starts right away.
 setlocal

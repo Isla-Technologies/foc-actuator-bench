@@ -74,15 +74,17 @@ def test_corrupt_settings_fall_back_to_defaults(tmp_path):
     assert (tmp_path / "settings.broken.json").exists()
 
 
-def test_settings_from_before_the_rename_are_taken_over(tmp_path, monkeypatch):
+@pytest.mark.parametrize("old_name", ["ODrive Actuator Bench", "ODrive Torque Meter"])
+def test_settings_from_before_the_rename_are_taken_over(tmp_path, monkeypatch, old_name):
     import actuator_bench.settings as settings_module
 
-    monkeypatch.setattr(settings_module, "config_dir", lambda: tmp_path / "config" / "ODrive Actuator Bench")
+    monkeypatch.setattr(settings_module, "config_dir", lambda: tmp_path / "config" / "FOC Actuator Bench")
     monkeypatch.setattr(settings_module.Path, "home", lambda: tmp_path)
     old = AppSettings()
     old.upsert_profile(ActuatorProfile(name="Knee", gear_ratio=36))
-    save_settings(old, tmp_path / "config" / "ODrive Torque Meter" / "settings.json")
-    (tmp_path / "Documents" / "ODrive Torque Meter").mkdir(parents=True)
+    save_settings(old, tmp_path / "config" / old_name / "settings.json")
+    (tmp_path / "Documents" / old_name).mkdir(parents=True)
     loaded = load_settings()
     assert loaded.current_profile == "Knee"
-    assert loaded.data_path == tmp_path / "Documents" / "ODrive Torque Meter"
+    assert loaded.data_path == tmp_path / "Documents" / old_name
+    assert loaded.profile("Knee").controller == "odrive"  # profiles from before 0.3 were all on an ODrive

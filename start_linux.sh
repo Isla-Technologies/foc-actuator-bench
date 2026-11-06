@@ -1,5 +1,5 @@
 #!/bin/bash
-# ODrive Actuator Bench - start on Linux:   bash start_linux.sh
+# FOC Actuator Bench - start on Linux:   bash start_linux.sh
 # Serial access needs your user in the "dialout" group:  sudo usermod -aG dialout $USER  (then log in again)
 
 cd "$(dirname "$0")" || exit 1

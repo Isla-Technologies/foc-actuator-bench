@@ -3,9 +3,9 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "odrive-actuator-bench"
+name = "foc-actuator-bench"
 version = "0.3.0"
-description = "Bench-test an actuator on an ODrive V3.6 or a SimpleFOC board: live torque, stall/hold tests, weight calibration, and the friction, inertia, speed, backlash and thermal values a robot simulation needs. Windows and macOS."
+description = "Bench-test an actuator on a FOC motor controller (ODrive V3.6, SimpleFOC boards): live torque, stall/hold tests, weight calibration, and the friction, inertia, speed, backlash and thermal values a robot simulation needs. Windows and macOS."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -26,7 +26,7 @@ native = ["odrive>=0.6.1"]
 dev = ["pytest>=7"]
 
 [project.scripts]
-odrive-actuator-bench = "actuator_bench.__main__:main"
+foc-actuator-bench = "actuator_bench.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["actuator_bench*"]

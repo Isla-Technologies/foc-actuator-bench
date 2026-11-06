@@ -15,8 +15,9 @@ from .torque import TORQUE_UNITS, TorqueModel, kt_from_kv
 
 log = logging.getLogger(__name__)
 
-APP_DIR_NAME = "ODrive Actuator Bench"
-LEGACY_DIR_NAME = "ODrive Torque Meter"  # the app's name before 0.2
+APP_DIR_NAME = "FOC Actuator Bench"
+# The app's earlier names, newest first: "ODrive Actuator Bench" (0.2), "ODrive Torque Meter" (0.1).
+LEGACY_DIR_NAMES = ("ODrive Actuator Bench", "ODrive Torque Meter")
 
 
 def config_dir() -> Path:
@@ -33,8 +34,13 @@ def default_data_dir() -> Path:
     return Path.home() / "Documents" / APP_DIR_NAME
 
 
-def legacy_settings_path() -> Path:
-    return config_dir().parent / LEGACY_DIR_NAME / "settings.json"
+def legacy_settings_path() -> Path | None:
+    """The settings file of the newest earlier name that has one."""
+    for name in LEGACY_DIR_NAMES:
+        path = config_dir().parent / name / "settings.json"
+        if path.exists():
+            return path
+    return None
 
 
 @dataclass
@@ -196,7 +202,7 @@ def settings_path() -> Path:
 
 
 def load_settings(path: Path | None = None) -> AppSettings:
-    if path is None and not settings_path().exists() and legacy_settings_path().exists():
+    if path is None and not settings_path().exists() and legacy_settings_path() is not None:
         return _load_legacy()
     path = path or settings_path()
     if not path.exists():
@@ -213,12 +219,16 @@ def load_settings(path: Path | None = None) -> AppSettings:
 
 
 def _load_legacy() -> AppSettings:
-    """First start after the rename: take over the old profiles, and keep using the old data folder."""
-    settings = load_settings(legacy_settings_path())
-    old_data = Path.home() / "Documents" / LEGACY_DIR_NAME
-    if not settings.data_dir and old_data.exists():
-        settings.data_dir = str(old_data)
-    log.info("Settings taken over from %s", legacy_settings_path())
+    """First start after a rename: take over the old profiles, and keep using the old data folder."""
+    old_settings = legacy_settings_path()
+    settings = load_settings(old_settings)
+    if not settings.data_dir:
+        for name in LEGACY_DIR_NAMES:
+            old_data = Path.home() / "Documents" / name
+            if old_data.exists():
+                settings.data_dir = str(old_data)
+                break
+    log.info("Settings taken over from %s", old_settings)
     return settings
 
 

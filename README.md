@@ -1,14 +1,15 @@
-# ODrive Actuator Bench
+# FOC Actuator Bench
 
-Bench-test an actuator driven by an **ODrive V3.6** or a **SimpleFOC board** (such as the ESP32 FOC
-driver boards). Measure its torque live, while it works, and with
+Bench-test an actuator driven by a FOC motor controller: an **ODrive V3.6** or a **SimpleFOC board**
+(such as the ESP32 FOC driver boards). More controllers can be added. Measure its torque live, while it works, and with
 automated **stall (peak torque)** and **holding torque** tests. Then measure everything a **robot
 simulator** needs to know about it: friction, rotor inertia, no-load and corner speed, backlash,
 gearbox stiffness and continuous current, exported in one file. Keep a profile per actuator, each on
 its own controller, and export one model each. Runs on **macOS** (Apple Silicon and Intel) and
 **Windows**. Includes a simulator of both controllers, so you can try everything without hardware.
 
-Formerly *ODrive Torque Meter*: settings and data from it carry over on the first start.
+Formerly *ODrive Actuator Bench* and, before that, *ODrive Torque Meter*: settings, profiles and
+the data folder carry over on the first start.
 
 ![Measure screen during a stall test](docs/images/measure.png)
 
@@ -207,7 +208,8 @@ limitations: **[Measuring an actuator for robot simulation](docs/simulation-mode
 
 ### Where your data goes
 
-Recordings and test results go to **Documents/ODrive Actuator Bench** (change it under
+Recordings and test results go to **Documents/FOC Actuator Bench** (or the folder an earlier version
+used; change it under
 **File → Change data folder**). Each test creates a folder with `summary.json`, `data.csv` and a
 chart image. CSV files start with `#` lines listing the settings used (KV, gear ratio,
 calibration, controller and its serial number…).

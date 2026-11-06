@@ -1,4 +1,4 @@
-// SimpleFOC bench firmware for ODrive Actuator Bench.
+// SimpleFOC bench firmware for FOC Actuator Bench.
 //
 // A SimpleFOC sketch for an ESP32 FOC driver board (three half bridges with inline current
 // sensing, e.g. the "ESP32 FOC 20A" boards with IR2104 gate drivers and INA240 amplifiers). The app

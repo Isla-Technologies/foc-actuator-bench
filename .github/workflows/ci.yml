@@ -35,6 +35,8 @@ jobs:
           python -m actuator_bench --version
           python -m actuator_bench info --connection simulator
           python -m actuator_bench monitor --connection simulator --kv 100 --gear 9 --seconds 1
+          python -m actuator_bench info --controller simplefoc --connection simulator
+          python -m actuator_bench monitor --controller simplefoc --connection simulator --kv 100 --gear 9 --seconds 1
       - name: Optional official odrive library installs
         continue-on-error: true
         run: |
