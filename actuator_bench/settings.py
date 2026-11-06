@@ -9,6 +9,7 @@ import sys
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+from .controllers import CONTROLLERS
 from .samples import Limits
 from .torque import TORQUE_UNITS, TorqueModel, kt_from_kv
 
@@ -44,7 +45,14 @@ class ActuatorProfile:
     kt: float = 0.0827                # motor torque constant [N*m/A]
     gear_ratio: float = 1.0           # output turns once per gear_ratio motor turns
     efficiency_pct: float = 100.0     # gearbox efficiency
-    axis: int = 0                     # 0 = M0, 1 = M1
+    # The motor's other values, for the Speed test and the simulation model when the controller
+    # doesn't know them (0 = unknown).
+    pole_pairs: int = 0
+    phase_resistance_ohm: float = 0.0
+    phase_inductance_uh: float = 0.0
+    controller: str = "odrive"        # odrive | simplefoc (see controllers/__init__.py)
+    axis: int = 0                     # ODrive: 0 = M0, 1 = M1
+    motor_letter: str = "M"           # SimpleFOC: the motor's Commander command letter
     max_current_a: float = 10.0       # safety limit for every test
     max_speed_rpm: float = 60.0       # output side
     unit: str = "N·m"
@@ -85,8 +93,18 @@ class ActuatorProfile:
             problems["gear_ratio"] = "Gear ratio must be greater than 0 (use 1 for direct drive)."
         if not 0 < self.efficiency_pct <= 100:
             problems["efficiency_pct"] = "Efficiency must be between 1 and 100 %."
-        if self.axis not in (0, 1):
+        if self.controller not in CONTROLLERS:
+            problems["controller"] = "Choose the controller."
+        if self.controller == "odrive" and self.axis not in (0, 1):
             problems["axis"] = "Choose M0 or M1."
+        if self.controller == "simplefoc" and not (len(self.motor_letter) == 1 and self.motor_letter.isalpha()):
+            problems["motor_letter"] = "One letter, as in the sketch's command.add('M', …) (usually M)."
+        if not (isinstance(self.pole_pairs, int) and 0 <= self.pole_pairs <= 200):
+            problems["pole_pairs"] = "Pole pairs: a whole number from 1 to 200, or 0 if unknown."
+        if not 0 <= self.phase_resistance_ohm < 100:
+            problems["phase_resistance_ohm"] = "Phase resistance can't be negative."
+        if not 0 <= self.phase_inductance_uh < 1e6:
+            problems["phase_inductance_uh"] = "Phase inductance can't be negative."
         if not self.max_current_a > 0:
             problems["max_current_a"] = "Current limit must be greater than 0."
         if not self.max_speed_rpm > 0:
@@ -95,13 +113,12 @@ class ActuatorProfile:
             problems["unit"] = "Unknown torque unit."
         return problems
 
-    def torque_model(self, kt_odrive: float | None = None) -> TorqueModel:
+    def torque_model(self) -> TorqueModel:
         return TorqueModel(
             kt_motor=self.kt_motor,
             gear_ratio=self.gear_ratio,
             efficiency=self.efficiency_pct / 100.0,
             calibrated_k_out=self.calibration_k_out if self.use_calibration else None,
-            kt_odrive=kt_odrive,
         )
 
     def limits(self) -> Limits:
@@ -119,6 +136,7 @@ class AppSettings:
     current_profile: str = "My actuator"
     connection_mode: str = "auto"
     serial_port: str = ""
+    serial_baud: int = 115200         # SimpleFOC boards: the sketch's Serial.begin() rate
     sample_rate_hz: float = 100.0
     display_filter_ms: float = 30.0
     watchdog_enabled: bool = True

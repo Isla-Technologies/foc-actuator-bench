@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 from . import APP_NAME, __version__
+from .controllers import CONTROLLERS
+from .device import phase_voltage_ratio
 from .identification import MotorConstants, ThermalFit, corner_speed, torque_speed_curve, zero_torque_speed
 from .odrive_api import MAX_PHASE_VOLTAGE_PER_BUS_VOLT
 from .settings import ActuatorProfile
@@ -52,6 +54,20 @@ def _motor(result: dict) -> MotorConstants | None:
         return None
     return MotorConstants(motor["flux_Vs_per_rad"], motor["phase_resistance_ohm"], motor["phase_inductance_H"],
                           int(motor["pole_pairs"]))
+
+
+def driver_voltage(profile: ActuatorProfile) -> tuple[float, float | None]:
+    """The driver's modulation ratio and phase voltage cap, as the speed test found them (results from
+    before they were recorded all came from an ODrive)."""
+    speed = profile.model_results.get("speed", {})
+    return (float(speed.get("phase_voltage_per_bus_volt") or MAX_PHASE_VOLTAGE_PER_BUS_VOLT),
+            speed.get("phase_voltage_limit_V") or None)
+
+
+def voltage_ratio(profile: ActuatorProfile) -> float:
+    """Phase volts per supply volt at the robot's battery voltage."""
+    modulation, cap = driver_voltage(profile)
+    return phase_voltage_ratio(modulation, cap, profile.battery_voltage)
 
 
 def _thermal(result: dict) -> ThermalFit | None:
@@ -98,13 +114,17 @@ def model_values(profile: ActuatorProfile) -> list[ModelValue]:
 
     motor = _motor(r.get("speed", {}))
     if motor:
+        ratio = voltage_ratio(profile)
         note = f"at {volts:g} V"
         if not r["speed"].get("resistance_measured", True):
-            note += "; no phase resistance from the ODrive, 0 Ω assumed"
-        values.append(ModelValue("no_load_speed", "No-load speed", zero_torque_speed(motor, volts) / gear, "rad/s",
-                                 MEASURED, "speed", note))
+            note += "; no phase resistance known, 0 Ω assumed"
+        modulation, cap = driver_voltage(profile)
+        if cap and cap < modulation * volts:
+            note += f"; the driver's {cap:g} V voltage limit, not the battery, sets it"
+        values.append(ModelValue("no_load_speed", "No-load speed", zero_torque_speed(motor, volts, ratio) / gear,
+                                 "rad/s", MEASURED, "speed", note))
         values.append(ModelValue("corner_speed", "Corner speed (full torque up to here)",
-                                 corner_speed(motor, volts, peak) / gear, "rad/s", CALCULATED, "speed",
+                                 corner_speed(motor, volts, peak, ratio) / gear, "rad/s", CALCULATED, "speed",
                                  f"at {volts:g} V and {peak:g} A"))
     else:
         values.append(ModelValue("no_load_speed", "No-load speed", None, "rad/s", MISSING, "speed"))
@@ -151,7 +171,8 @@ def simulation_model(profile: ActuatorProfile) -> dict:
     dates = {key: result.get("date", "") for key, result in profile.model_results.items()}
     if profile.has_calibration:
         dates["calibration"] = profile.calibration_date
-    actuator_type["note"] = (f"Measured on an ODrive bench with {APP_NAME} {__version__}. "
+    controller = CONTROLLERS.get(profile.controller, profile.controller)
+    actuator_type["note"] = (f"Measured on a bench with an {controller} and {APP_NAME} {__version__}. "
                              + ", ".join(f"{TESTS[k]} {d}" for k, d in sorted(dates.items()) if k in TESTS and d) + ".")
 
     extra: dict = {}
@@ -164,7 +185,8 @@ def simulation_model(profile: ActuatorProfile) -> dict:
             extra["gearbox_efficiency_from_back_emf"] = k_out / (motor.kt * gear)
         extra["torque_speed_curve"] = [
             {"speed_rad_s": round(w, 4), "torque_Nm": round(t, 4)}
-            for w, t in torque_speed_curve(motor, profile.battery_voltage, profile.robot_peak_current, k_out, gear)]
+            for w, t in torque_speed_curve(motor, profile.battery_voltage, profile.robot_peak_current, k_out, gear,
+                                           ratio=voltage_ratio(profile))]
     thermal = _thermal(profile.model_results.get("thermal", {}))
     if thermal:
         extra["thermal"] = {
@@ -183,7 +205,9 @@ def simulation_model(profile: ActuatorProfile) -> dict:
             "battery_voltage_V": profile.battery_voltage,
             "peak_current_A": profile.robot_peak_current,
             "motor_temp_limit_C": profile.temp_limit_c,
-            "driver_phase_voltage_per_bus_volt": MAX_PHASE_VOLTAGE_PER_BUS_VOLT,
+            "driver_phase_voltage_per_bus_volt": voltage_ratio(profile),
+            "driver_phase_voltage_limit_V": driver_voltage(profile)[1],
+            "controller": controller,
         },
         "actuator_type": actuator_type,
         "not_measured": [v.key for v in values if v.source in (SETUP, MISSING)],

@@ -208,6 +208,9 @@ class SimulatedODrive:
         self._clock = clock or time.perf_counter
         self._rng = random.Random(seed)
         self._step_s = step_s
+        # Largest phase voltage (peak) the driver applies at a bus voltage: the ODrive's, unless a
+        # simulated SimpleFOC board puts its own voltage limit and modulation here.
+        self.max_phase_voltage: Callable[[float], float] = lambda vbus: MAX_PHASE_VOLTAGE_PER_BUS_VOLT * vbus
         self._lock = threading.RLock()
         self._t = self._clock()
         self.system_error = 0
@@ -495,7 +498,7 @@ class SimulatedODrive:
         # current loop: first-order response (~0.5 ms), within the voltage the bus allows
         ax.iq += (ax.iq_set - ax.iq) * (1.0 - math.exp(-dt / 0.0005))
         if ax.state == AxisState.CLOSED_LOOP_CONTROL and ax.has_motor:
-            available = MAX_PHASE_VOLTAGE_PER_BUS_VOLT * self.vbus
+            available = self.max_phase_voltage(self.vbus)
             back_emf = a.flux * ax.vel * TWO_PI
             r = max(a.phase_resistance, 1e-6)
             ax.iq = min(max(ax.iq, (-available - back_emf) / r), (available - back_emf) / r)

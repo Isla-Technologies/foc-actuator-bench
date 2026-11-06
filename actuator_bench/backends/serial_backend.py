@@ -44,23 +44,29 @@ class PortInfo:
     description: str
     is_odrive: bool
     serial_number: str = ""
+    adapter: str = ""                 # the USB-serial chip SimpleFOC boards use, e.g. "CH340"
 
     @property
     def label(self) -> str:
         text = f"{self.device}  ({self.description})" if self.description else self.device
-        return f"{text}  [ODrive]" if self.is_odrive else text
+        if self.is_odrive:
+            return f"{text}  [ODrive]"
+        return f"{text}  [{self.adapter}]" if self.adapter else text
 
 
 def list_serial_ports() -> list[PortInfo]:
-    """All serial ports, ODrives first."""
+    """All serial ports: ODrives first, then USB-serial adapters (SimpleFOC boards), then the rest."""
     from serial.tools import list_ports
+
+    from ..controllers.commander import USB_SERIAL_VENDORS
 
     ports = []
     for p in list_ports.comports():
         text = " ".join(filter(None, [p.description, p.manufacturer, p.product])).lower()
         is_odrive = (p.vid == ODRIVE_USB_VID and p.pid in ODRIVE_USB_PIDS) or "odrive" in text
-        ports.append(PortInfo(p.device, p.description or "", is_odrive, p.serial_number or ""))
-    ports.sort(key=lambda port: (not port.is_odrive, port.device))
+        adapter = USB_SERIAL_VENDORS.get(p.vid, "") if not is_odrive else ""
+        ports.append(PortInfo(p.device, p.description or "", is_odrive, p.serial_number or "", adapter))
+    ports.sort(key=lambda port: (not port.is_odrive, not port.adapter, port.device))
     return ports
 
 

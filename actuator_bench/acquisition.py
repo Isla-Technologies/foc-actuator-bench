@@ -1,9 +1,9 @@
-"""The acquisition worker: owns the ODrive connection on a background thread.
+"""The acquisition worker: owns the controller connection on a background thread.
 
 It polls the fast values (current, position, speed) at the sample rate and the slow ones
 (voltage, temperature, state, errors) a few times per second, turns them into torque, runs the
-automated procedures, feeds the ODrive watchdog while the motor is armed, and executes commands
-queued from the UI. Every interaction with the device happens on this one thread.
+automated procedures, feeds the controller's watchdog while the motor is armed, and executes
+commands queued from the UI. Every interaction with the device happens on this one thread.
 """
 
 from __future__ import annotations
@@ -20,33 +20,55 @@ from .backends.base import Backend, BackendError, ConnectionLost
 from .backends.native_backend import NativeBackend, odrive_library_version
 from .backends.serial_backend import SerialBackend
 from .backends.sim_serial import SimulatedSerialPort
+from .backends.sim_simplefoc import SimulatedSimpleFOCBoard
 from .backends.simulator import SimActuator, SimulatedODrive, SimulatorBackend
-from .device import ArmError, DeviceInfo, ODriveAxis, Readiness, SlowReading
-from .odrive_api import AxisPaths, AxisState, ControlMode
+from .control import ControlMode, MotorState
+from .controllers.commander import DEFAULT_BAUD, CommanderLink
+from .controllers.odrive import ODriveAxis
+from .controllers.simplefoc import SimpleFOCMotor
+from .device import ArmError, DeviceInfo, MotorController, MotorParameters, Readiness, SlowReading, overspeed_trip
 from .procedures import Procedure, ProcedureError, ProcedureStatus
 from .samples import Limits, Sample, SampleBatch
 from .torque import TorqueModel
 
 log = logging.getLogger(__name__)
 
-CONNECTION_MODES = {
-    "auto": "Auto (recommended)",
-    "serial": "USB serial (no driver needed)",
-    "native": "Official ODrive library (USB)",
-    "simulator": "Simulator (no hardware)",
+SIMULATOR_MODE = {"simulator": "Simulator (no hardware)"}
+CONNECTION_MODES_BY_CONTROLLER = {
+    "odrive": {
+        "auto": "Auto (recommended)",
+        "serial": "USB serial (no driver needed)",
+        "native": "Official ODrive library (USB)",
+        **SIMULATOR_MODE,
+    },
+    "simplefoc": {
+        "serial": "USB serial (Commander)",
+        **SIMULATOR_MODE,
+    },
 }
+CONNECTION_MODES = CONNECTION_MODES_BY_CONTROLLER["odrive"]
+
+
+def connection_modes(controller: str) -> dict[str, str]:
+    return CONNECTION_MODES_BY_CONTROLLER.get(controller, CONNECTION_MODES)
+
 
 WATCHDOG_FEED_INTERVAL_S = 0.1
 MAX_CONSECUTIVE_FAILURES = 10
+OVERSPEED_SAMPLES = 2                # in a row, above device.overspeed_trip()
 
 
 @dataclass
 class ConnectRequest:
     mode: str = "auto"                  # auto | serial | native | simulator | simulator-serial
     port: str | None = None
-    axis: int = 0
+    axis: int = 0                       # ODrive: 0 = M0, 1 = M1
+    controller: str = "odrive"          # odrive | simplefoc
+    baud: int = DEFAULT_BAUD            # SimpleFOC: the sketch's Serial.begin() rate
+    motor_letter: str = "M"             # SimpleFOC: the motor's Commander letter
     sim_actuator: SimActuator | None = None
-    backend: Backend | None = None      # pre-built backend (tests)
+    backend: Backend | None = None      # pre-built ODrive backend (tests)
+    device: MotorController | None = None  # pre-built controller (tests)
 
 
 @dataclass
@@ -90,8 +112,30 @@ def make_sample(model: TorqueModel, t: float, fast, slow: SlowReading | None, po
     )
 
 
+def open_controller(request: ConnectRequest) -> tuple[MotorController, SimulatedODrive | None]:
+    """Connect to the controller a request asks for. The simulated ODrive comes back too when the
+    request is for a simulator (it also holds the physics behind a simulated SimpleFOC board)."""
+    if request.device is not None:
+        return request.device, getattr(request.device, "sim", None)
+    if request.controller == "simplefoc":
+        if request.mode == "simulator":
+            sim = SimulatedODrive(request.sim_actuator or SimActuator())
+            link = CommanderLink("SIM-SIMPLEFOC", request.baud, kind="simulator",
+                                 opener=lambda _port, _baud: SimulatedSimpleFOCBoard(sim, motor_letter=request.motor_letter))
+        elif request.mode == "serial":
+            link, sim = CommanderLink(request.port or None, request.baud), None
+        else:
+            raise BackendError(f"Unknown connection mode {request.mode!r} for a SimpleFOC board")
+        link.connect()
+        return SimpleFOCMotor(link, request.motor_letter), sim
+    if request.controller != "odrive":
+        raise BackendError(f"Unknown controller {request.controller!r}")
+    backend, sim = open_backend(request)
+    return ODriveAxis(backend, request.axis), sim
+
+
 def open_backend(request: ConnectRequest) -> tuple[Backend, SimulatedODrive | None]:
-    """Create and connect the backend for a connection request."""
+    """Create and connect the ODrive backend for a connection request."""
     if request.backend is not None:
         request.backend.connect()
         return request.backend, getattr(request.backend, "sim", None)
@@ -167,9 +211,14 @@ class _ProcedureContext:
         return self._w.limits
 
     @property
-    def vel_gain(self) -> float | None:
+    def speed_limiter_gain(self) -> float | None:
         r = self._w.readiness
-        return r.vel_gain if r else None
+        return r.speed_limiter_gain if r else None
+
+    @property
+    def controller_name(self) -> str:
+        dev = self._w._dev
+        return dev.name if dev else "controller"
 
     @property
     def latest_slow(self) -> SlowReading | None:
@@ -189,7 +238,7 @@ class _ProcedureContext:
 
     def set_torque_out(self, torque_out: float) -> None:
         if self._w.armed and self._w._dev:
-            self._w._dev.set_torque(self._w.model.odrive_input_torque(torque_out))
+            self._w._dev.set_current(self._w.model.current_for_output_torque(torque_out))
 
     def set_position_turns(self, turns: float, vel_ff: float = 0.0) -> None:
         if self._w.armed and self._w._dev:
@@ -200,13 +249,12 @@ class _ProcedureContext:
             limit = self._w.limits.max_motor_speed
             self._w._dev.set_velocity(max(-limit, min(limit, turns_per_s)))
 
-    @property
-    def paths(self) -> AxisPaths:
-        return self._w._require_device().p
+    def motor_parameters(self) -> MotorParameters:
+        return self._w._require_device().motor_parameters()
 
-    def read_optional(self, paths: list[str]) -> list:
-        dev = self._w._dev
-        return dev.read_optional(paths) if dev else [None] * len(paths)
+    def phase_voltage(self) -> tuple[float, float | None]:
+        dev = self._w._require_device()
+        return dev.modulation_ratio, dev.voltage_cap
 
     @property
     def motor_thermistor(self) -> bool:
@@ -244,8 +292,7 @@ class AcquisitionWorker:
         self._ctx = _ProcedureContext(self)
 
         # Everything below is only touched on the worker thread.
-        self._dev: ODriveAxis | None = None
-        self._backend: Backend | None = None
+        self._dev: MotorController | None = None
         self.sim: SimulatedODrive | None = None
         self.info: DeviceInfo | None = None
         self.readiness: Readiness | None = None
@@ -264,6 +311,8 @@ class AcquisitionWorker:
         self._last_feed = -math.inf
         self._pos_zero = 0.0
         self._position_target = 0.0
+        self._armed_vel_limit = math.inf
+        self._overspeed_count = 0
         self._failures = 0
         self._rate_count = 0
         self._rate_t0: float | None = None
@@ -271,7 +320,7 @@ class AcquisitionWorker:
 
     # --- lifecycle -------------------------------------------------------------------------
     def start(self) -> None:
-        self._thread = threading.Thread(target=self._run, name="odrive-worker", daemon=True)
+        self._thread = threading.Thread(target=self._run, name="controller-worker", daemon=True)
         self._thread.start()
 
     def shutdown(self, timeout: float = 3.0) -> None:
@@ -448,10 +497,40 @@ class AcquisitionWorker:
         self._latest = sample
         self._pending.append(sample)
         self._count_rate(now)
+        if self._check_overspeed(fast.vel):
+            self._flush(now)
+            return
         if self._proc is not None:
             self._update_procedure(sample)
         if now - self._last_emit >= self._emit_interval:
             self._flush(now)
+
+    def _check_overspeed(self, vel: float) -> bool:
+        """For controllers that don't cap the speed themselves: switch the motor off when it turns
+        well past the speed limit (an arm that slipped off its stop, a free output in torque mode)."""
+        dev = self._dev
+        if not self.armed or dev is None or dev.capabilities.torque_mode_speed_limit:
+            self._overspeed_count = 0
+            return False
+        if abs(vel) <= overspeed_trip(self._armed_vel_limit):
+            self._overspeed_count = 0
+            return False
+        self._overspeed_count += 1
+        if self._overspeed_count < OVERSPEED_SAMPLES:
+            return False
+        self._overspeed_count = 0
+        self._safe_estop()
+        text = (f"Overspeed: the motor turned at {abs(vel):.3g} turns/s, past the {self._armed_vel_limit:.3g} turns/s "
+                "speed limit, so the app switched it off.")
+        if self._proc is not None:
+            self._proc.finish(False, text, None)
+            self._emit("on_procedure", replace(self._proc.status))
+            self._proc = None
+        self.armed, self.armed_mode = False, None
+        self._state = int(MotorState.IDLE)
+        self._emit("on_armed", False, None)
+        self._emit("on_message", "error", text)
+        return True
 
     # --- samples ---------------------------------------------------------------------------
     def _read_slow(self, now: float) -> None:
@@ -461,7 +540,7 @@ class AcquisitionWorker:
         self._last_slow = now
         if slow.state is not None:
             self._state = slow.state
-        if self.armed and slow.state is not None and slow.state != AxisState.CLOSED_LOOP_CONTROL:
+        if self.armed and slow.state is not None and slow.state != MotorState.CLOSED_LOOP:
             self.armed, self.armed_mode = False, None
             try:
                 self._dev.disable_watchdog()
@@ -469,7 +548,7 @@ class AcquisitionWorker:
                 pass
             reasons = ", ".join(e.name for e in slow.errors) or "no error reported"
             self._emit("on_armed", False, None)
-            self._emit("on_message", "error", f"The ODrive switched the motor off ({reasons}).")
+            self._emit("on_message", "error", f"The {self._dev.name} switched the motor off ({reasons}).")
         self._emit("on_slow", slow)
 
     def _derive(self, t: float, fast) -> Sample:
@@ -498,22 +577,21 @@ class AcquisitionWorker:
         if self._dev is not None:
             self._do_disconnect("Reconnecting")
         self._emit("on_connection", ConnectionStatus("connecting", "Connecting…"))
-        backend = None
+        dev = None
         try:
-            backend, sim = open_backend(request)
-            dev = ODriveAxis(backend, request.axis)
+            dev, sim = open_controller(request)
+            dev.motor_kt = self.model.kt_motor
             info = dev.read_info()
             dev.remember_config()
             readiness = dev.readiness()
             fast = dev.read_fast()
         except BackendError as exc:
-            if backend is not None:
-                backend.close()
+            if dev is not None:
+                dev.close()
             self._emit("on_connection", ConnectionStatus("failed", str(exc)))
             return
-        self._dev, self._backend, self.sim = dev, backend, sim
+        self._dev, self.sim = dev, sim
         self.info, self.readiness = info, readiness
-        self.model.kt_odrive = readiness.kt_odrive
         self._state = readiness.state
         self.armed, self.armed_mode = False, None
         self.latest_slow = None
@@ -524,11 +602,15 @@ class AcquisitionWorker:
         self._failures = 0
         self._rate_t0 = None
         self._pos_zero = self._position_target = fast.pos
-        self._emit("on_connection", ConnectionStatus("connected", f"Connected via {backend.description}", info, readiness))
+        self._emit("on_connection", ConnectionStatus("connected", f"Connected via {dev.description}", info, readiness))
+        if readiness.state == MotorState.CLOSED_LOOP:
+            self._emit("on_message", "warning",
+                       f"The motor was already on when the app connected (the {dev.name} switched it on). Press STOP "
+                       "to switch it off, or Switch motor on to take control of it.")
         if not info.firmware_supported:
             self._emit("on_message", "warning",
                        f"Firmware {info.firmware} is not 0.5.x. This app targets ODrive v3.6 firmware 0.5.x; some values may be missing.")
-        if backend.kind == "serial" and info.firmware_has_ascii_bugs:
+        if dev.backend_kind == "serial" and info.firmware_has_ascii_bugs:
             self._emit("on_message", "warning",
                        f"Firmware {info.firmware} has ASCII-protocol bugs that can block arming over USB serial. "
                        "Use the 'Official ODrive library' connection or update the firmware to 0.5.6.")
@@ -541,7 +623,7 @@ class AcquisitionWorker:
             self._emit("on_procedure", replace(self._proc.status))
             self._proc = None
         try:
-            if self.armed or self._state == AxisState.CLOSED_LOOP_CONTROL:
+            if self.armed or self._state == MotorState.CLOSED_LOOP:
                 self._dev.disarm()
             self._dev.restore_config()
         except BackendError as exc:
@@ -557,21 +639,26 @@ class AcquisitionWorker:
             self._emit("on_procedure", replace(self._proc.status))
             self._proc = None
         was_armed = self.armed
+        dev = self._dev
+        watchdog = bool(dev and dev.watchdog_on)
+        name = dev.name if dev else "controller"
         self._close()
         self._emit("on_armed", False, None)
         text = f"Connection lost: {message}."
-        if was_armed:
-            text += " The ODrive's watchdog switches the motor off within about a second."
+        if was_armed and watchdog:
+            text += f" The {name}'s watchdog switches the motor off within about a second."
+        elif was_armed:
+            text += (f" The {name} has no watchdog running, so the motor may still be on: switch off its power "
+                     "supply.")
         self._emit("on_connection", ConnectionStatus("disconnected", text))
 
     def _close(self) -> None:
-        if self._backend is not None:
+        if self._dev is not None:
             try:
-                self._backend.close()
+                self._dev.close()
             except Exception:
                 pass
         self._dev = None
-        self._backend = None
         self.sim = None
         self.armed, self.armed_mode = False, None
         self._pending = []
@@ -582,15 +669,16 @@ class AcquisitionWorker:
         dev = self._require_device()
         vel_limit = self.limits.max_motor_speed if vel_limit is None else vel_limit
         max_current = self.limits.max_current if max_current is None else min(max_current, self.limits.max_current)
-        torque_lim = self.model.odrive_torque_limit(max_current)
         if self.armed:
-            dev.set_limits(vel_limit=vel_limit, torque_lim=torque_lim)
+            dev.set_limits(vel_limit=vel_limit, current_lim=max_current)
             dev.change_mode(mode, torque_mode_vel_limit=torque_mode_vel_limit)
         else:
-            dev.arm(mode, vel_limit=vel_limit, torque_lim=torque_lim, torque_mode_vel_limit=torque_mode_vel_limit,
+            dev.arm(mode, vel_limit=vel_limit, current_lim=max_current, torque_mode_vel_limit=torque_mode_vel_limit,
                     watchdog_timeout=self._watchdog_timeout, should_abort=self._estop.is_set)
         self.armed, self.armed_mode = True, mode
-        self._state = int(AxisState.CLOSED_LOOP_CONTROL)
+        self._armed_vel_limit = vel_limit
+        self._overspeed_count = 0
+        self._state = int(MotorState.CLOSED_LOOP)
         self._last_feed = self._clock()
         if mode == ControlMode.POSITION and self._latest is not None:
             self._position_target = self._latest.pos
@@ -613,13 +701,13 @@ class AcquisitionWorker:
     def _warn_torque_mode_cap(self) -> None:
         """In torque mode the ODrive limits torque at standstill to vel_limit * vel_gain."""
         r = self.readiness
-        if not r or not r.vel_gain:
+        if not r or not r.speed_limiter_gain:
             return
-        cap_out = self.model.output_torque(self.limits.max_motor_speed * r.vel_gain / (self.model.kt_odrive or self.model.kt_motor))
+        cap_out = self.model.output_torque(self.limits.max_motor_speed * r.speed_limiter_gain)
         full = self.model.max_output_torque(self.limits.max_current)
         if cap_out < 0.95 * full:
             self._emit("on_message", "info",
-                       f"Torque mode: at standstill the ODrive caps torque at about {cap_out:.3g} N·m "
+                       f"Torque mode: at standstill the {self._dev.name} caps torque at about {cap_out:.3g} N·m "
                        f"(speed limit × vel_gain). Raise the speed limit in Setup for more, or use the Stall test, "
                        f"which handles this automatically.")
 
@@ -631,7 +719,7 @@ class AcquisitionWorker:
         dev = self._require_device()
         dev.disarm()
         self.armed, self.armed_mode = False, None
-        self._state = int(AxisState.IDLE)
+        self._state = int(MotorState.IDLE)
         self._emit("on_armed", False, None)
 
     def _do_estop(self) -> None:
@@ -641,7 +729,7 @@ class AcquisitionWorker:
             self._emit("on_procedure", replace(self._proc.status))
             self._proc = None
         self.armed, self.armed_mode = False, None
-        self._state = int(AxisState.IDLE) if self._dev else self._state
+        self._state = int(MotorState.IDLE) if self._dev else self._state
         self._emit("on_armed", False, None)
         self._emit("on_message", "warning", "STOP: motor switched off.")
 
@@ -671,7 +759,7 @@ class AcquisitionWorker:
             return
         limit = self.model.max_output_torque(self.limits.max_current)
         torque_out = max(-limit, min(limit, torque_out))
-        self._dev.set_torque(self.model.odrive_input_torque(torque_out))
+        self._dev.set_current(self.model.current_for_output_torque(torque_out))
 
     def _do_set_speed(self, rpm: float) -> None:
         if not self._manual_ok(ControlMode.VELOCITY):
@@ -697,14 +785,15 @@ class AcquisitionWorker:
             self._pos_zero = self._latest.pos
 
     def _do_set_model(self, model: TorqueModel) -> None:
-        kt_odrive = self.readiness.kt_odrive if self.readiness else model.kt_odrive
-        self.model = replace(model, kt_odrive=kt_odrive)
+        self.model = model
+        if self._dev is not None:
+            self._dev.motor_kt = model.kt_motor
 
     def _do_set_limits(self, limits: Limits) -> None:
         self.limits = limits
         if self.armed and self._proc is None and self._dev is not None:
-            self._dev.set_limits(vel_limit=limits.max_motor_speed,
-                                 torque_lim=self.model.odrive_torque_limit(limits.max_current))
+            self._dev.set_limits(vel_limit=limits.max_motor_speed, current_lim=limits.max_current)
+            self._armed_vel_limit = limits.max_motor_speed
 
     # --- maintenance -----------------------------------------------------------------------
     def _do_clear_errors(self) -> None:
@@ -718,22 +807,24 @@ class AcquisitionWorker:
 
     def _do_calibrate(self) -> None:
         dev = self._require_device()
+        if not dev.capabilities.motor_calibration:
+            dev.start_calibration()  # raises, saying why it can't
+            return
         if self.armed:
             self._do_disarm()
-        dev.start_calibration()
         self._emit("on_message", "info",
-                   "Motor calibration started: the motor beeps and turns slowly for a few seconds. "
-                   "Keep the output free to move.")
+                   "Motor calibration started: the motor turns slowly for a few seconds. Keep the output free to move.")
+        dev.start_calibration()
 
     def _do_apply_kt(self, kt: float) -> None:
         self._require_device().apply_torque_constant(kt)
-        self._emit("on_message", "info", f"torque_constant set to {kt:.5f} N·m/A on the ODrive (until it reboots).")
+        self._emit("on_message", "info",
+                   f"Torque constant set to {kt:.5f} N·m/A on the {self._dev.name} (until it restarts).")
         self._do_refresh_readiness()
 
     def _do_refresh_readiness(self) -> None:
         dev = self._require_device()
         self.readiness = dev.readiness()
-        self.model.kt_odrive = self.readiness.kt_odrive
         self._emit("on_readiness", self.readiness)
 
     def _do_configure_sim(self, changes: dict) -> None:
@@ -753,7 +844,7 @@ class AcquisitionWorker:
                 snapshot["config"] = self._dev.config_snapshot()
             except BackendError as exc:
                 snapshot["config"] = f"unavailable ({exc})"
-            snapshot["device_messages"] = list(getattr(self._backend, "device_messages", []))
+            snapshot["device_messages"] = self._dev.device_messages
         self._emit("on_snapshot", snapshot)
 
     # --- procedures ------------------------------------------------------------------------
@@ -803,12 +894,12 @@ class AcquisitionWorker:
         if (force_disarm or not proc.keep_armed) and self.armed and self._dev is not None:
             self._dev.disarm()
             self.armed, self.armed_mode = False, None
-            self._state = int(AxisState.IDLE)
+            self._state = int(MotorState.IDLE)
             self._emit("on_armed", False, None)
         self._emit("on_procedure", replace(proc.status))
 
     # --- helpers ---------------------------------------------------------------------------
-    def _require_device(self) -> ODriveAxis:
+    def _require_device(self) -> MotorController:
         if self._dev is None:
             raise BackendError("not connected")
         return self._dev

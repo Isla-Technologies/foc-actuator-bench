@@ -1,6 +1,6 @@
 """Command line: start the app (default), list ports, show device info, or monitor torque.
 
-``info`` and ``monitor`` only read from the ODrive; they never move the motor.
+``info`` and ``monitor`` only read from the controller; they never move the motor.
 """
 
 from __future__ import annotations
@@ -16,16 +16,21 @@ log = logging.getLogger(__name__)
 
 
 def _add_connection_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--connection", choices=["auto", "serial", "native", "simulator"], default="auto",
-                        help="how to reach the ODrive (default: auto)")
+    parser.add_argument("--controller", choices=["odrive", "simplefoc"], default="odrive",
+                        help="the motor controller (default: odrive)")
+    parser.add_argument("--connection", choices=["auto", "serial", "native", "simulator"], default=None,
+                        help="how to reach it (default: auto for the ODrive, serial for SimpleFOC)")
     parser.add_argument("--port", help="serial port, e.g. COM5 or /dev/cu.usbmodem1234 (default: auto-detect)")
-    parser.add_argument("--axis", type=int, choices=[0, 1], default=0, help="0 = M0, 1 = M1 (default: 0)")
+    parser.add_argument("--axis", type=int, choices=[0, 1], default=0, help="ODrive: 0 = M0, 1 = M1 (default: 0)")
+    parser.add_argument("--baud", type=int, default=115200, help="SimpleFOC: the sketch's baud rate (default 115200)")
+    parser.add_argument("--letter", default="M", help="SimpleFOC: the motor's Commander letter (default M)")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="odrive-actuator-bench",
-        description=f"{APP_NAME} {__version__}: measure the torque of an ODrive V3.6 actuator.",
+        description=f"{APP_NAME} {__version__}: measure the torque of an actuator on an ODrive V3.6 or a "
+                    "SimpleFOC board.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--debug", action="store_true", help="verbose logging")
@@ -35,9 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
     gui = sub.add_parser("gui", help="start the app (default)")
     gui.add_argument("--sim", action="store_true", help="start with the simulator selected")
 
-    sub.add_parser("ports", help="list serial ports (ODrives are marked)")
+    sub.add_parser("ports", help="list serial ports (ODrives and USB-serial adapters are marked)")
 
-    info = sub.add_parser("info", help="show ODrive info, configuration and errors (read-only)")
+    info = sub.add_parser("info", help="show controller info, configuration and errors (read-only)")
     _add_connection_args(info)
 
     monitor = sub.add_parser("monitor", help="print live torque (read-only, never moves the motor)")
@@ -77,7 +82,7 @@ def cmd_ports() -> int:
 
     ports = list_serial_ports()
     if not ports:
-        print("No serial ports found. Is the ODrive's DC power on and the USB cable a data cable?")
+        print("No serial ports found. Is the controller powered and the USB cable a data cable?")
         return 1
     for port in ports:
         print(port.label)
@@ -85,19 +90,20 @@ def cmd_ports() -> int:
 
 
 def _connect(args):
-    from .acquisition import ConnectRequest, open_backend
-    from .device import ODriveAxis
+    from .acquisition import ConnectRequest, open_controller
 
-    backend, _sim = open_backend(ConnectRequest(mode=args.connection, port=args.port, axis=args.axis))
-    return ODriveAxis(backend, args.axis), backend
+    mode = args.connection or ("auto" if args.controller == "odrive" else "serial")
+    dev, _sim = open_controller(ConnectRequest(mode=mode, port=args.port, axis=args.axis, controller=args.controller,
+                                               baud=args.baud, motor_letter=args.letter))
+    return dev
 
 
 def cmd_info(args) -> int:
     from .backends.base import BackendError
-    from .odrive_api import state_label
+    from .control import state_label
 
     try:
-        dev, backend = _connect(args)
+        dev = _connect(args)
     except BackendError as exc:
         print(f"Could not connect: {exc}")
         return 1
@@ -106,11 +112,13 @@ def cmd_info(args) -> int:
         readiness = dev.readiness()
         config = dev.config_snapshot()
         print(f"Connection : {info.connection}")
-        print(f"Hardware   : ODrive {info.hardware}")
+        print(f"Hardware   : {info.board}")
         print(f"Firmware   : {info.firmware}{'' if info.firmware_supported else '  (not 0.5.x: unsupported)'}")
         print(f"Serial     : {info.serial}")
-        print(f"Axis {args.axis}     : {state_label(readiness.state)}; motor calibrated: {readiness.motor_calibrated}; "
+        print(f"Motor      : {state_label(readiness.state)}; motor calibrated: {readiness.motor_calibrated}; "
               f"encoder ready: {readiness.encoder_ready}")
+        for kind, text in readiness.checks:
+            print(f"  [{kind}] {text}")
         if readiness.errors:
             print("Errors:")
             for flag in readiness.errors:
@@ -124,7 +132,7 @@ def cmd_info(args) -> int:
         print(f"Communication error: {exc}")
         return 1
     finally:
-        backend.close()
+        dev.close()
     return 0
 
 
@@ -136,7 +144,7 @@ def cmd_monitor(args) -> int:
     from .torque import TorqueModel, TorqueStats, kt_from_kv
 
     try:
-        dev, backend = _connect(args)
+        dev = _connect(args)
     except BackendError as exc:
         print(f"Could not connect: {exc}")
         return 1
@@ -144,19 +152,18 @@ def cmd_monitor(args) -> int:
     try:
         info = dev.read_info()
         readiness = dev.readiness()
-        kt = args.kt or (kt_from_kv(args.kv) if args.kv else readiness.kt_odrive)
+        kt = args.kt or (kt_from_kv(args.kv) if args.kv else readiness.kt_device)
         if not kt:
-            print("Could not read the ODrive's torque_constant; pass --kv or --kt.")
+            print(f"The {dev.name} has no torque constant to read; pass --kv or --kt.")
             return 1
         if not (args.kt or args.kv):
-            print(f"Using the ODrive's torque_constant = {kt:.5f} N·m/A (pass --kv or --kt to override).")
-        model = TorqueModel(kt_motor=kt, gear_ratio=args.gear, efficiency=args.efficiency / 100.0,
-                            kt_odrive=readiness.kt_odrive)
+            print(f"Using the {dev.name}'s torque constant = {kt:.5f} N·m/A (pass --kv or --kt to override).")
+        model = TorqueModel(kt_motor=kt, gear_ratio=args.gear, efficiency=args.efficiency / 100.0)
         if args.csv:
-            recorder = CsvRecorder(args.csv, {"source": "monitor", "odrive": info.hardware, "firmware": info.firmware,
+            recorder = CsvRecorder(args.csv, {"source": "monitor", "device": info.board, "firmware": info.firmware,
                                               "kt_motor_Nm_per_A": kt, "gear_ratio": args.gear,
                                               "efficiency_pct": args.efficiency})
-        print(f"Monitoring ODrive {info.hardware} (fw {info.firmware}) via {info.connection}. Ctrl+C to stop.")
+        print(f"Monitoring {info.board} ({info.firmware}) via {info.connection}. Ctrl+C to stop.")
         print(f"{'time s':>8} {'torque N·m':>11} {'Iq A':>8} {'speed rpm':>10} {'angle °':>9} {'Vbus V':>7} {'FET °C':>7}")
         stats = TorqueStats()
         period = 1.0 / max(1.0, args.rate)
@@ -201,7 +208,7 @@ def cmd_monitor(args) -> int:
     finally:
         if recorder:
             print(f"Saved {recorder.close()['file']}")
-        backend.close()
+        dev.close()
     return 0
 
 

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "odrive-actuator-bench"
-version = "0.2.0"
-description = "Bench-test an ODrive V3.6 actuator: live torque, stall/hold tests, weight calibration, and the friction, inertia, speed, backlash and thermal values a robot simulation needs. Windows and macOS."
+version = "0.3.0"
+description = "Bench-test an actuator on an ODrive V3.6 or a SimpleFOC board: live torque, stall/hold tests, weight calibration, and the friction, inertia, speed, backlash and thermal values a robot simulation needs. Windows and macOS."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

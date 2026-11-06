@@ -33,7 +33,8 @@ def test_connect_reports_device_and_readiness(rig_factory):
     assert status.info.firmware == "0.5.6"
     assert status.info.firmware_supported
     assert status.readiness.can_arm
-    assert status.readiness.kt_odrive == pytest.approx(0.0827)
+    assert status.readiness.kt_device == pytest.approx(0.0827)
+    assert status.info.board.startswith("ODrive 3.6")
     rig.run(0.5)
     assert len(rig.listener.column("t")) >= 45
     assert abs(rig.listener.column("torque_out").mean()) < 0.05

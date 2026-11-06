@@ -29,7 +29,6 @@ class _TestPanel(QWidget):
         super().__init__(parent)
         self.worker = worker
         self.profile: ActuatorProfile | None = None
-        self.kt_odrive: float | None = None
         self.connected = False
         self.running = False
         self.busy = False
@@ -68,11 +67,11 @@ class _TestPanel(QWidget):
         """Largest output torque allowed by the current limit, in display units."""
         if not self.profile:
             return 1.0
-        model = self.profile.torque_model(self.kt_odrive)
+        model = self.profile.torque_model()
         return model.max_output_torque(self.profile.max_current_a) * self.factor
 
-    def set_profile(self, profile: ActuatorProfile, kt_odrive: float | None = None) -> None:
-        self.profile, self.kt_odrive = profile, kt_odrive
+    def set_profile(self, profile: ActuatorProfile) -> None:
+        self.profile = profile
 
     def set_connected(self, connected: bool) -> None:
         self.connected = connected
@@ -158,8 +157,8 @@ class StallTestPanel(_TestPanel):
         root.addStretch(1)
         self._update_enabled()
 
-    def set_profile(self, profile: ActuatorProfile, kt_odrive: float | None = None) -> None:
-        super().set_profile(profile, kt_odrive)
+    def set_profile(self, profile: ActuatorProfile) -> None:
+        super().set_profile(profile)
         maximum = self.max_torque()
         self.target.setSuffix(f" {profile.unit}")
         self.target.setMaximum(maximum)
@@ -228,8 +227,8 @@ class HoldTestPanel(_TestPanel):
         root.addStretch(1)
         self._update_enabled()
 
-    def set_profile(self, profile: ActuatorProfile, kt_odrive: float | None = None) -> None:
-        super().set_profile(profile, kt_odrive)
+    def set_profile(self, profile: ActuatorProfile) -> None:
+        super().set_profile(profile)
         maximum = self.max_torque()
         self.limit.setSuffix(f" {profile.unit}")
         self.limit.setMaximum(maximum)

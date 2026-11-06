@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from .. import APP_NAME, __version__
 from ..acquisition import AcquisitionWorker, ConnectionStatus
+from ..controllers import CONTROLLER_NAMES, CONTROLLERS
 from ..diagnostics import build_report, log_dir
 from ..model_export import record_result
 from ..procedures import ProcedureStatus
@@ -76,7 +77,7 @@ class MainWindow(QMainWindow):
         self.profile: ActuatorProfile = settings.profile()
         self.connected = False
         self.connection_status: ConnectionStatus | None = None
-        self.kt_odrive: float | None = None
+        self.kt_device: float | None = None   # the controller's own torque constant, if it has one
         self.recorder: CsvRecorder | None = None
         self.setup_done = False
         self.procedure_running = False
@@ -205,7 +206,7 @@ class MainWindow(QMainWindow):
         self.steps.set_state(step, enabled=[True, self.setup_done, self.connected],
                              done=[self.setup_done, self.connected, False])
         messages = {STEP_SETUP: "Enter your actuator's values, then press Next.",
-                    STEP_CONNECT: "Connect to the ODrive or the simulator.",
+                    STEP_CONNECT: "Connect to the controller or the simulator.",
                     STEP_MEASURE: "Measuring. Press STOP or Esc at any time to switch the motor off."}
         self.statusBar().showMessage(messages[step])
 
@@ -232,7 +233,7 @@ class MainWindow(QMainWindow):
         self.worker.set_watchdog(s.watchdog_timeout_s if s.watchdog_enabled else None)
         self.connect_page.set_profile(profile)
         self.measure_page.settings = s
-        self.measure_page.set_profile(profile, self.kt_odrive)
+        self.measure_page.set_profile(profile)
 
     def _measure_back(self) -> None:
         if self.procedure_running:
@@ -253,10 +254,10 @@ class MainWindow(QMainWindow):
         self.connected = status.state == "connected"
         self.connect_page.set_status(status)
         if self.connected:
-            self.kt_odrive = status.readiness.kt_odrive if status.readiness else None
+            self.kt_device = status.readiness.kt_device if status.readiness else None
             sim = status.info.backend_kind == "simulator" if status.info else False
             self.measure_page.set_connection(True, status.info, sim, self.settings.sim_scenario)
-            self.measure_page.set_profile(self.profile, self.kt_odrive)
+            self.measure_page.set_profile(self.profile)
             save_settings(self.settings)
         elif status.state in ("disconnected", "failed"):
             self.measure_page.set_connection(False)
@@ -271,9 +272,9 @@ class MainWindow(QMainWindow):
                              done=[self.setup_done, self.connected, False])
 
     def _on_readiness(self, readiness) -> None:
-        self.kt_odrive = readiness.kt_odrive
+        self.kt_device = readiness.kt_device
         self.connect_page.set_readiness(readiness)
-        self.measure_page.set_profile(self.profile, self.kt_odrive)
+        self.measure_page.set_profile(self.profile)
 
     def _on_samples(self, batch) -> None:
         self.measure_page.add_batch(batch)
@@ -295,7 +296,11 @@ class MainWindow(QMainWindow):
         self.measure_page.show_message(level, text)
         self.statusBar().showMessage(text, 10000)
         if level == "error" and self.stack.currentIndex() == STEP_CONNECT:
-            QMessageBox.warning(self, "ODrive", text)
+            QMessageBox.warning(self, self._controller_title(), text)
+
+    def _controller_title(self) -> str:
+        info = self.connection_status.info if self.connection_status else None
+        return info.controller if info else CONTROLLER_NAMES.get(self.profile.controller, "Controller")
 
     def _on_procedure(self, status: ProcedureStatus) -> None:
         m = self.measure_page
@@ -327,8 +332,9 @@ class MainWindow(QMainWindow):
     # --- recording -------------------------------------------------------------------------
     def _metadata(self) -> dict:
         p = self.profile
-        model = p.torque_model(self.kt_odrive)
+        model = p.torque_model()
         info = self.connection_status.info if self.connection_status else None
+        where = f"axis {p.axis} (M{p.axis})" if p.controller == "odrive" else f"Commander letter {p.motor_letter}"
         return {
             "app": f"{APP_NAME} {__version__}",
             "created": timestamp(),
@@ -340,11 +346,12 @@ class MainWindow(QMainWindow):
             "efficiency_pct": p.efficiency_pct,
             "calibrated_k_out_Nm_per_A": p.calibration_k_out if model.is_calibrated else "not used",
             "output_torque_per_amp_Nm_per_A": round(model.k_out, 6),
-            "odrive_torque_constant": self.kt_odrive,
+            "controller": CONTROLLERS.get(p.controller, p.controller),
+            "controller_torque_constant": self.kt_device,
             "max_current_A": p.max_current_a,
             "max_output_speed_rpm": p.max_speed_rpm,
-            "axis": p.axis,
-            "odrive": f"{info.hardware} fw {info.firmware} serial {info.serial}" if info else "not connected",
+            "motor_on": where,
+            "device": f"{info.board} fw {info.firmware} serial {info.serial}" if info else "not connected",
             "connection": info.connection if info else "",
         }
 
@@ -402,7 +409,7 @@ class MainWindow(QMainWindow):
         self.profile = self.setup_page.current_profile()
         self.settings.upsert_profile(self.profile)
         save_settings(self.settings)
-        self.measure_page.model.set_profile(self.profile, self.kt_odrive)
+        self.measure_page.model.set_profile(self.profile)
 
     # --- STOP, reports, misc ---------------------------------------------------------------
     def emergency_stop(self) -> None:
@@ -443,12 +450,12 @@ class MainWindow(QMainWindow):
         Path(path).write_text(build_report(snapshot, self.settings, extra), encoding="utf-8")
         QMessageBox.information(self, "Debug report saved",
                                 f"Saved {path}.\n\nSend this file to whoever helps you with the setup. "
-                                "It contains the app/OS versions, ODrive settings and recent log messages.")
+                                "It contains the app/OS versions, controller settings and recent log messages.")
 
     def about(self) -> None:
         QMessageBox.about(self, f"About {APP_NAME}",
-                          f"<b>{APP_NAME} {__version__}</b><br>Measures the torque of an actuator driven by an "
-                          "ODrive V3.6 (firmware 0.5.x) from the motor current.<br><br>"
+                          f"<b>{APP_NAME} {__version__}</b><br>Measures the torque of an actuator from the motor "
+                          "current, driven by an ODrive V3.6 (firmware 0.5.x) or a SimpleFOC board.<br><br>"
                           "Torque = Kt × current × gear ratio × efficiency, or the weight calibration.<br>"
                           f"Python {sys.version.split()[0]} · MIT licence")
 

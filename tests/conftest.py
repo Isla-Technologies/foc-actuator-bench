@@ -52,20 +52,27 @@ class RecordingListener(WorkerListener):
 class Rig:
     """A worker connected to a simulated ODrive, stepped manually with a fake clock."""
 
-    def __init__(self, actuator: SimActuator, *, backend_factory=None, model: TorqueModel | None = None,
-                 limits: Limits | None = None, dt: float = 0.01, step_s: float = 0.001):
+    def __init__(self, actuator: SimActuator, *, backend_factory=None, device_factory=None,
+                 model: TorqueModel | None = None, limits: Limits | None = None, dt: float = 0.01,
+                 step_s: float = 0.001, expect_connected: bool = True):
         self.clock = ManualClock()
         self.sim = SimulatedODrive(actuator, clock=self.clock, seed=3, step_s=step_s)
-        self.backend = backend_factory(self.sim) if backend_factory else SimulatorBackend(self.sim)
         self.listener = RecordingListener()
         self.worker = AcquisitionWorker(self.listener, clock=self.clock, watchdog_timeout_s=1.0)
         self.dt = dt
         self.model = model or TorqueModel(kt_motor=kt_from_kv(actuator.kv), gear_ratio=actuator.gear_ratio)
         self.worker.set_model(self.model)
         self.worker.set_limits(limits or Limits(max_current=15.0, max_motor_speed=3.0))
-        self.worker.connect(ConnectRequest(backend=self.backend))
+        if device_factory:  # another controller (a simulated SimpleFOC board) around the same physics
+            self.backend = None
+            self.device = device_factory(self.sim)
+            self.worker.connect(ConnectRequest(device=self.device))
+        else:
+            self.backend = backend_factory(self.sim) if backend_factory else SimulatorBackend(self.sim)
+            self.worker.connect(ConnectRequest(backend=self.backend))
         self.worker.step()
-        assert self.listener.connection[-1].state == "connected", self.listener.connection[-1].message
+        if expect_connected:
+            assert self.listener.connection[-1].state == "connected", self.listener.connection[-1].message
 
     def run(self, seconds: float) -> None:
         for _ in range(int(round(seconds / self.dt))):

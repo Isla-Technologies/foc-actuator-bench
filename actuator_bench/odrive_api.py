@@ -8,8 +8,11 @@ firmware source. Only the subset this app needs is listed.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from enum import IntEnum
+
+# ControlMode, ErrorFlag and state_label are shared by every controller; imported here so the
+# ODrive code finds everything in one place.
+from .control import ControlMode, ErrorFlag, decode_flags, state_label  # noqa: F401
 
 ODRIVE_USB_VID = 0x1209
 ODRIVE_USB_PIDS = (0x0D32,)  # ODrive v3.x running application firmware
@@ -37,13 +40,6 @@ class AxisState(IntEnum):
     ENCODER_HALL_PHASE_CALIBRATION = 13
 
 
-class ControlMode(IntEnum):
-    VOLTAGE = 0
-    TORQUE = 1
-    VELOCITY = 2
-    POSITION = 3
-
-
 class InputMode(IntEnum):
     INACTIVE = 0
     PASSTHROUGH = 1
@@ -65,32 +61,6 @@ CALIBRATION_STATES = {
     AxisState.ENCODER_HALL_POLARITY_CALIBRATION,
     AxisState.ENCODER_HALL_PHASE_CALIBRATION,
 }
-
-_STATE_LABELS = {
-    AxisState.UNDEFINED: "Undefined",
-    AxisState.IDLE: "Idle (motor off)",
-    AxisState.STARTUP_SEQUENCE: "Starting up",
-    AxisState.FULL_CALIBRATION_SEQUENCE: "Calibrating",
-    AxisState.MOTOR_CALIBRATION: "Calibrating motor",
-    AxisState.ENCODER_INDEX_SEARCH: "Searching encoder index",
-    AxisState.ENCODER_OFFSET_CALIBRATION: "Calibrating encoder",
-    AxisState.CLOSED_LOOP_CONTROL: "Closed loop (motor active)",
-    AxisState.LOCKIN_SPIN: "Lock-in spin",
-    AxisState.ENCODER_DIR_FIND: "Finding encoder direction",
-    AxisState.HOMING: "Homing",
-    AxisState.ENCODER_HALL_POLARITY_CALIBRATION: "Calibrating hall polarity",
-    AxisState.ENCODER_HALL_PHASE_CALIBRATION: "Calibrating hall phase",
-}
-
-
-def state_label(value: int | None) -> str:
-    if value is None:
-        return "Unknown"
-    try:
-        return _STATE_LABELS[AxisState(int(value))]
-    except ValueError:
-        return f"State {int(value)}"
-
 
 # --- Error codes -------------------------------------------------------------------------------
 # Each table maps bit value -> (NAME, plain-English explanation).
@@ -184,36 +154,9 @@ ERROR_TABLES = {
 }
 
 
-@dataclass(frozen=True)
-class ErrorFlag:
-    component: str
-    name: str
-    value: int
-    explanation: str
-
-    def __str__(self) -> str:
-        return f"{self.component}: {self.name}"
-
-
 def decode_errors(component: str, value: int | float | None) -> list[ErrorFlag]:
-    """Split an error register into its individual flags (unknown bits are reported too)."""
-    if not value:
-        return []
-    value = int(value)
-    table = ERROR_TABLES[component]
-    flags: list[ErrorFlag] = []
-    remaining = value
-    for bit, (name, explanation) in table.items():
-        if value & bit:
-            flags.append(ErrorFlag(component, name, bit, explanation))
-            remaining &= ~bit
-    bit = 1
-    while remaining:
-        if remaining & bit:
-            flags.append(ErrorFlag(component, f"UNKNOWN_0x{bit:X}", bit, "Unknown error bit (newer/older firmware?)."))
-            remaining &= ~bit
-        bit <<= 1
-    return flags
+    """Split an ODrive error register into its individual flags (unknown bits are reported too)."""
+    return decode_flags(component, value, ERROR_TABLES[component])
 
 
 # --- Property paths ----------------------------------------------------------------------------

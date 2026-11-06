@@ -16,8 +16,8 @@ from typing import Protocol
 import numpy as np
 
 from .calibration import analyze_sweep
-from .device import SlowReading
-from .odrive_api import AxisPaths, AxisState, ControlMode
+from .control import ControlMode, MotorState
+from .device import MotorParameters, SlowReading
 from .samples import Limits, Sample
 from .torque import TorqueModel, TorqueStats
 
@@ -40,7 +40,8 @@ class ProcedureStatus:
 class ProcedureContext(Protocol):
     model: TorqueModel
     limits: Limits
-    vel_gain: float | None
+    speed_limiter_gain: float | None   # see Readiness.speed_limiter_gain
+    controller_name: str
     latest_slow: SlowReading | None
     armed: bool
     armed_mode: ControlMode | None
@@ -54,10 +55,10 @@ class ProcedureContext(Protocol):
 
     def set_velocity_turns(self, turns_per_s: float) -> None: ...
 
-    @property
-    def paths(self) -> AxisPaths: ...
+    def motor_parameters(self) -> MotorParameters: ...
 
-    def read_optional(self, paths: list[str]) -> list: ...
+    def phase_voltage(self) -> tuple[float, float | None]:
+        """The controller's modulation ratio and phase voltage cap (see MotorController)."""
 
     @property
     def motor_thermistor(self) -> bool: ...
@@ -83,13 +84,11 @@ def arm_for_torque(ctx: ProcedureContext, target_out: float, top_speed: float = 
             f"{target:.3g} N·m needs {current:.1f} A, above your {ctx.limits.max_current:.1f} A "
             "current limit. Lower the target or raise the limit in Setup."
         )
-    odrive_target = ctx.model.odrive_input_torque(target)
     vel_limit = ctx.limits.max_motor_speed
-    limiter = True
-    if ctx.vel_gain and ctx.vel_gain > 0:
-        vel_limit = max(vel_limit, abs(top_speed) + 1.3 * odrive_target / ctx.vel_gain)
-    else:
-        limiter = False
+    gain = ctx.speed_limiter_gain
+    limiter = bool(gain and gain > 0)
+    if limiter:
+        vel_limit = max(vel_limit, abs(top_speed) + 1.3 * current / gain)
     ctx.arm(ControlMode.TORQUE, vel_limit=vel_limit,
             max_current=min(ctx.limits.max_current, current * 1.2 + 0.5),
             torque_mode_vel_limit=limiter)
@@ -138,8 +137,8 @@ class Procedure:
     @staticmethod
     def check_running(ctx: ProcedureContext, sample: Sample) -> str | None:
         state = int(sample.state) if sample.state is not None else -1
-        if state >= 0 and state != AxisState.CLOSED_LOOP_CONTROL:  # negative = not known yet
-            return "The ODrive switched the motor off." + ctx.describe_errors()
+        if state >= 0 and state != MotorState.CLOSED_LOOP:  # negative = not known yet
+            return f"The {ctx.controller_name} switched the motor off." + ctx.describe_errors()
         return None
 
 

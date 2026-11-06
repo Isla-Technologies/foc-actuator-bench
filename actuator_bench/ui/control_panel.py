@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..odrive_api import ControlMode
+from ..control import ControlMode
 from ..settings import ActuatorProfile
 from ..torque import TORQUE_UNITS
 from .widgets import NumberField, fmt, label
@@ -125,10 +125,10 @@ class ControlPanel(QWidget):
         self._update_enabled()
 
     # --- configuration ---------------------------------------------------------------------
-    def set_profile(self, profile: ActuatorProfile, kt_odrive: float | None = None) -> None:
+    def set_profile(self, profile: ActuatorProfile) -> None:
         self.profile = profile
         factor = TORQUE_UNITS[profile.unit]
-        model = profile.torque_model(kt_odrive)
+        model = profile.torque_model()
         max_torque = model.max_output_torque(profile.max_current_a) * factor
         for field, maximum, suffix in ((self.torque_field, max_torque, profile.unit),
                                        (self.speed_field, profile.max_speed_rpm, "rpm")):

@@ -94,3 +94,48 @@ def test_full_flow_with_simulator(window, tmp_path):
     # STOP is always available and leaves the motor off.
     win.emergency_stop()
     assert pump(app, 2, lambda: not win.worker.armed)
+
+
+def test_simplefoc_flow_with_simulator(window):
+    holder, app = window
+    win = holder[0]
+    setup = win.setup_page
+
+    # Step 1: a BE4108-style motor on a SimpleFOC board.
+    setup.controller.setCurrentIndex(setup.controller.findData("simplefoc"))
+    assert setup.letter.isVisibleTo(setup) and not setup.axis.isVisibleTo(setup)
+    setup.kv.setValue(380)
+    setup.pole_pairs.setValue(11)
+    setup.gear.setValue(1)
+    setup.max_current.setValue(5)
+    setup.max_speed.setValue(300)
+    setup.next_button.click()
+    assert win.stack.currentIndex() == 1
+    assert win.profile.controller == "simplefoc" and win.profile.pole_pairs == 11
+
+    # Step 2: the Connect page offers the SimpleFOC connections.
+    page = win.connect_page
+    assert "SimpleFOC" in page.title.text()
+    modes = [page.mode.itemData(i) for i in range(page.mode.count())]
+    assert modes == ["serial", "simulator"]
+    page.mode.setCurrentIndex(page.mode.findData("simulator"))
+    page.scenario.setCurrentIndex(page.scenario.findData("wall"))
+    page.connect_button.click()
+    assert pump(app, 10, lambda: win.connected), page.status_text.text()
+    assert page.info_labels["Board"].text().startswith("SimpleFOC")
+    assert not page.kt_button.isVisibleTo(page)  # SimpleFOC has no torque constant to write
+
+    # Step 3: a stall test.
+    page.proceed_button.click()
+    measure = win.measure_page
+    assert pump(app, 5, lambda: len(measure.buffer) > 50)
+    stall = measure.stall
+    stall.target.setValue(0.08)
+    stall.ramp.setValue(0.6)
+    stall.hold.setValue(0.4)
+    stall.start_button.click()
+    assert pump(app, 2, lambda: win.procedure_running)
+    assert pump(app, 15, lambda: not win.procedure_running), stall.message.text()
+    assert "complete" in stall.message.text(), stall.message.text()
+    win.emergency_stop()
+    assert pump(app, 2, lambda: not win.worker.armed)

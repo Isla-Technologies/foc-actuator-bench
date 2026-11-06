@@ -1,6 +1,6 @@
 """Torque math: from measured motor current to output torque, plus units, filters and statistics.
 
-The ODrive measures current, not torque. Torque is estimated as::
+The controller measures current, not torque. Torque is estimated as::
 
     motor torque  = Kt * Iq                     (Kt ~= 8.27 / KV  [N*m/A])
     output torque = motor torque * gear ratio * efficiency
@@ -47,15 +47,14 @@ def convert_torque(value_nm, unit: str):
 class TorqueModel:
     """Converts between motor current and torque, and between motor and output units.
 
-    Positions/velocities from the ODrive are motor-side (turns, turns/s); output-side values are
-    divided by the gear ratio.
+    Positions/velocities from the controller are motor-side (turns, turns/s); output-side values
+    are divided by the gear ratio.
     """
 
     kt_motor: float                         # N*m/A, used for measurement
     gear_ratio: float = 1.0
     efficiency: float = 1.0                 # 0..1
     calibrated_k_out: float | None = None   # output N*m per amp, from weight calibration
-    kt_odrive: float | None = None          # torque_constant configured inside the ODrive
 
     def __post_init__(self) -> None:
         if self.kt_motor <= 0:
@@ -88,19 +87,6 @@ class TorqueModel:
 
     def max_output_torque(self, max_current: float) -> float:
         return self.k_out * max_current
-
-    # commands for the ODrive (which uses its own torque_constant to turn torque into current)
-    def odrive_input_torque(self, torque_out: float) -> float:
-        """``controller.input_torque`` value that makes the ODrive deliver ``torque_out``."""
-        return self.current_for_output_torque(torque_out) * self._kt_device
-
-    def odrive_torque_limit(self, max_current: float) -> float:
-        """``motor.config.torque_lim`` value equivalent to ``max_current`` amps."""
-        return max_current * self._kt_device
-
-    @property
-    def _kt_device(self) -> float:
-        return self.kt_odrive if self.kt_odrive and self.kt_odrive > 0 else self.kt_motor
 
     # motor side <-> output side
     def output_angle_deg(self, motor_turns):

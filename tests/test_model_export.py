@@ -80,3 +80,35 @@ def test_model_results_survive_saving(tmp_path):
     assert loaded.model_results["inertia"]["inertia_kgm2"] == pytest.approx(0.097)
     assert loaded.battery_voltage == 22.2
     assert {v.key: v.source for v in model_values(loaded)}["armature"] == MEASURED
+
+
+def test_two_actuators_on_different_controllers_export_side_by_side(tmp_path):
+    """One profile per actuator: an ODrive one and a SimpleFOC one, each with its own model."""
+    settings = AppSettings()
+    settings.upsert_profile(measured_profile())  # on an ODrive (the default)
+    foc = ActuatorProfile(name="BE4108 on ESP32 FOC", controller="simplefoc", kv=380, pole_pairs=11, gear_ratio=1,
+                          max_current_a=3, battery_voltage=24.0)
+    motor = MotorConstants(flux=8.27 / 380 / 1.5, resistance=0.2, inductance=1e-4, pole_pairs=11)
+    # SVPWM (1/√3 of the supply), but the sketch's voltage_limit of 11 V comes first at 24 V.
+    record_result(foc, "speed", {"test": "speed", "motor": motor.to_dict(), "resistance_measured": True,
+                                 "phase_voltage_per_bus_volt": 1 / math.sqrt(3), "phase_voltage_limit_V": 11.0})
+    record_result(foc, "inertia", {"test": "inertia", "inertia_kgm2": 5.5e-5})
+    settings.upsert_profile(foc)
+    save_settings(settings, tmp_path / "settings.json")
+    loaded = load_settings(tmp_path / "settings.json")
+
+    odrive_model = simulation_model(loaded.profile("Luma-1 macro"))
+    foc_model = simulation_model(loaded.profile("BE4108 on ESP32 FOC"))
+    assert odrive_model["conditions"]["controller"].startswith("ODrive")
+    assert foc_model["conditions"]["controller"].startswith("SimpleFOC")
+    assert "SimpleFOC" in foc_model["actuator_type"]["note"]
+    assert foc_model["actuator_type"]["armature"] == pytest.approx(5.5e-5)
+    assert foc_model["actuator_type"]["no_load_speed"] == pytest.approx(11.0 / motor.flux, rel=1e-5)
+    assert foc_model["conditions"]["driver_phase_voltage_per_bus_volt"] == pytest.approx(11.0 / 24.0)
+    assert odrive_model["actuator_type"]["armature"] == pytest.approx(0.097)
+    # On a 12 V battery the modulation, not the voltage limit, sets the top speed.
+    foc12 = loaded.profile("BE4108 on ESP32 FOC")
+    foc12.battery_voltage = 12.0
+    assert simulation_model(foc12)["actuator_type"]["no_load_speed"] == pytest.approx(
+        12.0 / math.sqrt(3) / motor.flux, rel=1e-5)
+    json.dumps(foc_model, allow_nan=False)

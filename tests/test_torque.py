@@ -37,13 +37,21 @@ def test_calibration_overrides_nominal_constant():
 
 
 def test_command_scaling_compensates_odrive_torque_constant():
-    # The ODrive turns input_torque into current with ITS torque_constant (here the 0.04 default).
-    model = TorqueModel(kt_motor=0.0827, gear_ratio=6.0, efficiency=1.0, kt_odrive=0.04)
-    target = 3.0
-    input_torque = model.odrive_input_torque(target)
-    current = input_torque / 0.04
-    assert model.output_torque(current) == pytest.approx(target)
-    assert model.odrive_torque_limit(10.0) == pytest.approx(0.4)
+    # The ODrive turns input_torque into current with ITS torque_constant (here the 0.04 default),
+    # so the app's current commands are converted with that value, not the motor's real Kt.
+    from actuator_bench.backends.simulator import SimActuator, SimulatedODrive, SimulatorBackend
+    from actuator_bench.controllers.odrive import ODriveAxis
+
+    sim = SimulatedODrive(SimActuator(odrive_kt_configured=False))
+    dev = ODriveAxis(SimulatorBackend(sim))
+    dev.motor_kt = 0.0827
+    assert dev.readiness().kt_device == pytest.approx(0.04)
+    model = TorqueModel(kt_motor=0.0827, gear_ratio=6.0, efficiency=1.0)
+    current = model.current_for_output_torque(3.0)
+    dev.set_current(current)
+    assert sim.read("axis0.controller.input_torque") == pytest.approx(current * 0.04)
+    dev.set_limits(vel_limit=2.0, current_lim=10.0)
+    assert sim.read("axis0.motor.config.torque_lim") == pytest.approx(0.4)
 
 
 def test_motor_to_output_conversions():

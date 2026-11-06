@@ -30,7 +30,8 @@ from .identification import (
     motor_from_no_load,
     zero_torque_speed,
 )
-from .odrive_api import ControlMode
+from .control import ControlMode
+from .device import phase_voltage_ratio
 from .procedures import Procedure, ProcedureContext, ProcedureError, arm_for_torque
 from .samples import Sample
 
@@ -396,6 +397,19 @@ class SpeedTestParams:
     ramp_s: float = 6.0             # from standstill to the speed limit
     hold_s: float = 1.0             # averaged at the top speed
     both_directions: bool = True
+    # The motor's values from Setup, used where the controller doesn't know them (0 = unknown).
+    pole_pairs: int = 0
+    phase_resistance: float = 0.0   # ohm
+    phase_inductance: float = 0.0   # H
+
+
+def _pick(from_controller, from_setup, default):
+    """The controller's value (measured or configured on it), else Setup's, else ``default``."""
+    if from_controller:
+        return from_controller, "controller"
+    if from_setup:
+        return from_setup, "Setup"
+    return default, "none"
 
 
 class SpeedTest(Procedure):
@@ -423,14 +437,18 @@ class SpeedTest(Procedure):
         p = self.p
         if p.ramp_s <= 0 or p.hold_s <= 0:
             raise ProcedureError("Ramp and hold times must be positive.")
-        paths = ctx.paths
-        resistance, inductance, pole_pairs = ctx.read_optional(
-            [paths.phase_resistance, paths.phase_inductance, paths.pole_pairs])
+        known = ctx.motor_parameters()
+        resistance, r_source = _pick(known.phase_resistance, p.phase_resistance, 0.0)
+        inductance, l_source = _pick(known.phase_inductance, p.phase_inductance, 0.0)
+        pole_pairs, pp_source = _pick(known.pole_pairs, p.pole_pairs, 7)
         self.constants = {
-            "phase_resistance_ohm": float(resistance) if resistance else 0.0,
-            "phase_inductance_H": float(inductance) if inductance else 0.0,
-            "pole_pairs": int(pole_pairs) if pole_pairs else 7,
+            "phase_resistance_ohm": float(resistance),
+            "phase_inductance_H": float(inductance),
+            "pole_pairs": int(pole_pairs),
             "resistance_measured": bool(resistance),
+            "phase_resistance_source": r_source,
+            "phase_inductance_source": l_source,
+            "pole_pairs_source": pp_source,
         }
         self.directions = [1, -1] if p.both_directions else [1]
         self._limit = ctx.limits.max_motor_speed
@@ -510,6 +528,12 @@ class SpeedTest(Procedure):
         ctx.set_velocity_turns(0.0)
         limited = [r for r in self.runs if r["voltage_limited"] and math.isfinite(r["vbus_V"])]
         gear = ctx.model.gear_ratio
+        if not limited and any(r["voltage_limited"] for r in self.runs):
+            top = max(r["speed_motor_turns_s"] for r in self.runs)
+            self.finish(False, f"The motor topped out at {top / gear * 60:.4g} rpm at the output, but the "
+                               f"{ctx.controller_name} doesn't report its supply voltage, so its back-EMF can't be "
+                               "worked out. The bench firmware for SimpleFOC boards reports it.", self.result(ctx))
+            return
         if not limited:
             top = max((r["speed_motor_turns_s"] for r in self.runs), default=0.0)
             self.finish(False, f"The motor reached your speed limit ({top / gear * 60:.4g} rpm at the output) before it "
@@ -519,10 +543,12 @@ class SpeedTest(Procedure):
         motor_speed = _mean([r["speed_motor_turns_s"] for r in limited]) * TWO_PI
         current = _mean([r["current_A"] for r in limited])
         vbus = _mean([r["vbus_V"] for r in limited])
+        modulation, cap = ctx.phase_voltage()
+        ratio = phase_voltage_ratio(modulation, cap, vbus)
         c = self.constants
         try:
             motor = motor_from_no_load(motor_speed, current, vbus, c["phase_resistance_ohm"],
-                                       c["phase_inductance_H"], c["pole_pairs"])
+                                       c["phase_inductance_H"], c["pole_pairs"], ratio)
         except ValueError as exc:
             self.finish(False, str(exc), self.result(ctx))
             return
@@ -531,10 +557,12 @@ class SpeedTest(Procedure):
             "no_load_speed_rpm": motor_speed / gear * 60.0 / TWO_PI,
             "no_load_current_A": current,
             "vbus_V": vbus,
-            "zero_torque_speed_rad_s": zero_torque_speed(motor, vbus) / gear,
+            "phase_voltage_per_bus_volt": modulation,
+            "phase_voltage_limit_V": cap,
+            "zero_torque_speed_rad_s": zero_torque_speed(motor, vbus, ratio) / gear,
             "motor": motor.to_dict(),
         }
-        note = "" if c["resistance_measured"] else " (the ODrive didn't report a phase resistance, so 0 Ω was used)"
+        note = "" if c["resistance_measured"] else " (no phase resistance known, so 0 Ω was used)"
         self.finish(True, f"No-load speed {motor_speed / gear:.3g} rad/s at {vbus:.1f} V; back-EMF Kt "
                           f"{motor.kt:.4g} N·m/A{note}.", self.result(ctx))
 
@@ -671,6 +699,9 @@ class ThermalTest(Procedure):
             raise ProcedureError("Run for at least 30 s, with a positive allowed movement.")
         self.sensor = "motor" if ctx.motor_thermistor else "driver"
         start_temp = self._temperature(ctx)
+        if ctx.latest_slow is not None and not math.isfinite(start_temp):
+            raise ProcedureError(f"The {ctx.controller_name} doesn't report a temperature, so the heating can't be "
+                                 "measured. On a SimpleFOC board, set up a temperature sensor in the bench firmware.")
         if math.isfinite(start_temp) and start_temp >= p.temp_limit_c - 5.0:
             raise ProcedureError(f"The {self.sensor} is already at {start_temp:.0f} °C. Let it cool down first.")
         self.pos0 = sample.pos

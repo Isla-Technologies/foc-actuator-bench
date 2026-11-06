@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..device import SlowReading
-from ..odrive_api import AxisState, state_label
+from ..control import MotorState, state_label
 from ..samples import SAMPLE_FIELDS, SampleBatch
 from ..settings import ActuatorProfile, AppSettings
 from ..torque import TORQUE_UNITS, LowPass, TorqueStats
@@ -155,7 +155,7 @@ class MeasurePage(QWidget):
         self.t_angle = StatTile("Output angle", "°", value_size=16)
         self.t_vbus = StatTile("Bus voltage", "V", value_size=16)
         self.t_power = StatTile("Electrical power", "W", value_size=16)
-        self.t_fet = StatTile("ODrive temperature", "°C", value_size=16)
+        self.t_fet = StatTile("Driver temperature", "°C", value_size=16)
         self.t_rate = StatTile("Sample rate", "Hz", value_size=16)
         for i, tile in enumerate((self.t_motor, self.t_current, self.t_speed, self.t_angle,
                                   self.t_vbus, self.t_power, self.t_fet, self.t_rate)):
@@ -185,14 +185,14 @@ class MeasurePage(QWidget):
     def factor(self) -> float:
         return TORQUE_UNITS[self.profile.unit]
 
-    def set_profile(self, profile: ActuatorProfile, kt_odrive: float | None = None) -> None:
+    def set_profile(self, profile: ActuatorProfile) -> None:
         self.profile = profile
         unit = profile.unit
         self.hero.unit.setText(unit)
         for tile in (self.t_peak, self.t_mean, self.t_rms, self.t_motor):
             tile.set_unit(unit)
         self.plots.set_unit(unit, self.factor)
-        model = profile.torque_model(kt_odrive)
+        model = profile.torque_model()
         self.plots.set_scale(model.max_output_torque(profile.max_current_a) * self.factor,
                              profile.max_current_a, profile.max_speed_rpm)
         source = "weight calibration" if model.is_calibrated else "Kt × current × gear ratio × efficiency"
@@ -201,7 +201,7 @@ class MeasurePage(QWidget):
                                + (f" · smoothed {smoothing:g} ms" if smoothing else ""))
         self.lowpass = LowPass(smoothing / 1000.0)
         for panel in (self.control, self.stall, self.hold, self.calibration, self.model):
-            panel.set_profile(profile, kt_odrive)
+            panel.set_profile(profile)
 
     def set_connection(self, connected: bool, info=None, is_simulator: bool = False, scenario: str = "") -> None:
         if connected:
@@ -209,7 +209,7 @@ class MeasurePage(QWidget):
             self.plots.clear()
             self.lowpass.reset()
             self.reset_stats()
-            self.device_text.setText(f"ODrive {info.hardware} · fw {info.firmware} · {info.connection}" if info else "")
+            self.device_text.setText(f"{info.board} · {info.firmware} · {info.connection}" if info else "")
         else:
             self.pill.set("neutral", "Not connected")
             self.device_text.setText("")
@@ -237,9 +237,9 @@ class MeasurePage(QWidget):
         self.slow = slow
         if slow.errors:
             self.pill.set("critical", "Error")
-        elif slow.state == AxisState.CLOSED_LOOP_CONTROL:
+        elif slow.state == MotorState.CLOSED_LOOP:
             self.pill.set("warning", "Motor ON")
-        elif slow.state is not None and slow.state not in (AxisState.IDLE, AxisState.UNDEFINED):
+        elif slow.state is not None and slow.state not in (MotorState.IDLE, MotorState.UNKNOWN):
             self.pill.set("info", state_label(slow.state))
         else:
             self.pill.set("neutral", "Motor off (monitoring)")

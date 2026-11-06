@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..calibration import CalibrationFit, CalibrationPoint, fit_calibration
-from ..odrive_api import ControlMode
+from ..control import ControlMode
 from ..procedures import CalibrationSweep, CalibrationSweepParams, ProcedureStatus
 from ..settings import ActuatorProfile
 from .widgets import NumberField, form_grid, label, section_title
@@ -153,7 +153,7 @@ class CalibrationPanel(QWidget):
         self._update_enabled()
 
     # --- state from the main window ------------------------------------------------------------
-    def set_profile(self, profile: ActuatorProfile, kt_odrive: float | None = None) -> None:
+    def set_profile(self, profile: ActuatorProfile) -> None:
         self.profile = profile
 
     def set_connected(self, connected: bool, is_simulator: bool = False, scenario: str = "") -> None:

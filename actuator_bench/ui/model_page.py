@@ -118,9 +118,9 @@ class _ModelTestPanel(_TestPanel):
     def simulator_hint(self) -> str:
         return self.sim_hint
 
-    def set_profile(self, profile: ActuatorProfile, kt_odrive: float | None = None) -> None:
+    def set_profile(self, profile: ActuatorProfile) -> None:
         changed = self.profile is None or self.profile.name != profile.name
-        super().set_profile(profile, kt_odrive)
+        super().set_profile(profile)
         if changed:
             self.defaults(profile)
         if self._chart_profile and self._chart_profile != profile.name:
@@ -310,7 +310,7 @@ class SpeedPanel(_ModelTestPanel):
             "<b>No-load speed</b> sets the simulator's <code>no_load_speed</code> and <code>corner_speed</code>: "
             "how fast the joint can turn, and up to what speed it still gives full torque. The speed rises until "
             "the motor runs out of voltage. The speed it tops out at gives the motor's back-EMF; with the "
-            "resistance and inductance the ODrive measured in its motor calibration, the app works out both "
+            "motor's resistance and inductance (from the controller, or from Setup), the app works out both "
             "speeds at your robot's battery voltage (set on the Overview tab)."), (
             "<b>Set up:</b> nothing on the output, which must spin freely for many turns in both directions. "
             "Max output speed in Setup must be above the no-load speed, about 1.5 times what you expect: the test "
@@ -327,14 +327,17 @@ class SpeedPanel(_ModelTestPanel):
             StatTile("No-load speed", "rpm"), StatTile("Supply during the test", "V"),
             StatTile("No-load current", "A"), StatTile("Motor Kt from back-EMF", "N·m/A")])
 
-    def set_profile(self, profile: ActuatorProfile, kt_odrive: float | None = None) -> None:
-        super().set_profile(profile, kt_odrive)
+    def set_profile(self, profile: ActuatorProfile) -> None:
+        super().set_profile(profile)
         self.limit_info.setText(f"Speed limit now: {profile.max_speed_rpm:g} rpm at the output "
                                 f"({profile.max_speed_rpm / RPM_PER_RAD_S:.3g} rad/s).")
         self.set_simulator(self.is_simulator, self.scenario)
 
     def _start(self) -> None:
-        self._launch(SpeedTest(SpeedTestParams(ramp_s=self.ramp.value(), both_directions=self.both.isChecked())))
+        p = self.profile
+        self._launch(SpeedTest(SpeedTestParams(
+            ramp_s=self.ramp.value(), both_directions=self.both.isChecked(), pole_pairs=p.pole_pairs,
+            phase_resistance=p.phase_resistance_ohm, phase_inductance=p.phase_inductance_uh * 1e-6)))
 
     def show_values(self, r: dict) -> None:
         speed, volts, current, kt = self.tiles
@@ -382,13 +385,13 @@ class BacklashPanel(_ModelTestPanel):
     def _limit(self) -> float:
         if not self.profile:
             return 1.0
-        return self.profile.torque_model(self.kt_odrive).max_output_torque(self.profile.max_current_a)
+        return self.profile.torque_model().max_output_torque(self.profile.max_current_a)
 
     def defaults(self, profile: ActuatorProfile) -> None:
         self.torque.setValue(0.3 * profile.torque_model().max_output_torque(profile.max_current_a))
 
-    def set_profile(self, profile: ActuatorProfile, kt_odrive: float | None = None) -> None:
-        super().set_profile(profile, kt_odrive)
+    def set_profile(self, profile: ActuatorProfile) -> None:
+        super().set_profile(profile)
         self.torque.setMaximum(self._limit())
         self.max_info.setText(f"max {sig(self._limit())} N·m with your {profile.max_current_a:g} A limit")
 
@@ -433,9 +436,10 @@ class ThermalPanel(_ModelTestPanel):
             "temperature. A heating curve fitted to it gives the current at which the motor would settle exactly "
             "at your temperature limit."), (
             "<b>Set up:</b> as for the stall test: press the arm against a fixed object, or clamp the output. "
-            "Start with a cold motor. Use the motor's temperature sensor (wire it and enable "
-            "<code>motor_thermistor</code> in the ODrive): without it the app can only read the ODrive's own "
-            "temperature, which describes the driver, not the motor. It takes 10 to 20 minutes. You can stop early "
+            "Start with a cold motor. Use the motor's temperature sensor (on an ODrive, wire it and enable "
+            "<code>motor_thermistor</code>; on a SimpleFOC board, set it up in the bench firmware): without it the "
+            "app can only read the driver's own temperature, which describes the driver, not the motor. A "
+            "controller that reports no temperature at all can't run this test. It takes 10 to 20 minutes. You can stop early "
             "and still get a result, but the longer it runs, the firmer the result."),
             "Temperature", "Heating curve", parent)
         self.current = NumberField(0.1, 120, 5, decimals=1, step=1, suffix="A")
@@ -466,7 +470,7 @@ class ThermalPanel(_ModelTestPanel):
         current, torque, tau, settle = self.tiles
         amps = r.get("continuous_current_A")
         current.set(sig(amps))
-        k_out = self.profile.torque_model(self.kt_odrive).k_out if self.profile else math.nan
+        k_out = self.profile.torque_model().k_out if self.profile else math.nan
         torque.set(sig(amps * k_out) if amps is not None else "—")
         tau.set(sig(r["time_constant_s"] / 60.0) if "time_constant_s" in r else "—")
         settle.set(sig(r["start_temp_C"] + r["rise_C"]) if "rise_C" in r else "—")
@@ -544,7 +548,7 @@ class GearRatioPanel(QWidget):
         root.addStretch(1)
         self._update()
 
-    def set_profile(self, profile: ActuatorProfile, kt_odrive: float | None = None) -> None:
+    def set_profile(self, profile: ActuatorProfile) -> None:
         self.profile = profile
         self.r_setup.set(sig(profile.gear_ratio, 6))
         stored = profile.model_results.get(self.test_key) or {}
@@ -592,7 +596,7 @@ class GearRatioPanel(QWidget):
             self.live.setText("Switch the motor off first: it would hold the output against your hand.")
             return
         if self.latest_pos is None:
-            self.live.setText("No reading from the ODrive yet. Wait a moment and press Start again.")
+            self.live.setText("No reading from the controller yet. Wait a moment and press Start again.")
             return
         self.start_pos = self.latest_pos
         self.live.setText("Counting. Turn the output now, then press Done.")
@@ -778,10 +782,10 @@ class ModelPage(QWidget):
         self.gear.measured.connect(lambda result: self.result_measured.emit("gear_ratio", result))
         self.overview.values_changed.connect(self.profile_values_changed.emit)
 
-    def set_profile(self, profile: ActuatorProfile, kt_odrive: float | None = None) -> None:
+    def set_profile(self, profile: ActuatorProfile) -> None:
         self.overview.set_profile(profile)
         for panel in (*self.test_panels, self.gear):
-            panel.set_profile(profile, kt_odrive)
+            panel.set_profile(profile)
 
     def set_connected(self, connected: bool, is_simulator: bool = False, scenario: str = "") -> None:
         for panel in (*self.test_panels, self.gear):

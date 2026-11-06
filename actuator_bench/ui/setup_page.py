@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QRadioButton,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..controllers import CONTROLLERS
 from ..settings import ActuatorProfile, AppSettings
 from ..torque import KT_PER_KV, TORQUE_UNITS
 from .widgets import NumberField, card, fmt, form_grid, label, section_title
@@ -49,8 +51,9 @@ class SetupPage(QWidget):
 
         root.addWidget(label("Enter your actuator's values", "pageTitle", size=22, weight=QFont.DemiBold))
         root.addWidget(label(
-            "The ODrive measures motor current; these values turn that current into torque and set the "
-            "safety limits for every test. You can come back and change them at any time.", "secondary", wrap=True))
+            "The controller measures motor current; these values turn that current into torque and set the "
+            "safety limits for every test. Keep one profile per actuator: each keeps its own calibration and "
+            "simulation model. You can come back and change them at any time.", "secondary", wrap=True))
 
         root.addLayout(self._profile_row())
 
@@ -60,6 +63,7 @@ class SetupPage(QWidget):
         left.setSpacing(14)
         right = QVBoxLayout()
         right.setSpacing(14)
+        left.addWidget(self._controller_card())
         left.addWidget(self._motor_card())
         left.addWidget(self._gearbox_card())
         left.addStretch(1)
@@ -130,15 +134,69 @@ class SetupPage(QWidget):
         self.kt_info = label("", "secondary", wrap=True)
         layout.addWidget(self.kt_info)
         layout.addWidget(label(f"KV is on the motor's datasheet (rpm per volt). Kt ≈ {KT_PER_KV} / KV.", "muted", wrap=True))
+        extra = form_grid()
+        self.pole_pairs = NumberField(0, 200, 0, decimals=0, step=1)
+        self.pole_pairs.setSpecialValueText("unknown")
+        extra.addWidget(label("Pole pairs"), 0, 0)
+        extra.addWidget(self.pole_pairs, 0, 1)
+        extra.addWidget(label("magnets ÷ 2, e.g. 11 for a 22-magnet motor", "muted", wrap=True), 0, 2, 1, 2)
+        extra.addWidget(self._error_label("pole_pairs"), 1, 1, 1, 3)
+        self.resistance = NumberField(0, 99, 0, decimals=4, step=0.01, suffix="Ω")
+        self.resistance.setSpecialValueText("unknown")
+        extra.addWidget(label("Phase resistance"), 2, 0)
+        extra.addWidget(self.resistance, 2, 1)
+        extra.addWidget(self._error_label("phase_resistance_ohm"), 3, 1, 1, 3)
+        self.inductance = NumberField(0, 100000, 0, decimals=1, step=10, suffix="µH")
+        self.inductance.setSpecialValueText("unknown")
+        extra.addWidget(label("Phase inductance"), 4, 0)
+        extra.addWidget(self.inductance, 4, 1)
+        extra.addWidget(self._error_label("phase_inductance_uh"), 5, 1, 1, 3)
+        layout.addLayout(extra)
+        layout.addWidget(label(
+            "Optional. The No-load speed test uses them when the controller doesn't know them itself (the ODrive "
+            "measures resistance and inductance in its motor calibration). Leave them unknown otherwise.",
+            "muted", wrap=True))
         for widget in (self.kv_radio, self.kt_radio):
             widget.toggled.connect(self._changed)
-        self.kv.valueChanged.connect(self._changed)
-        self.kt.valueChanged.connect(self._changed)
+        for field in (self.kv, self.kt, self.pole_pairs, self.resistance, self.inductance):
+            field.valueChanged.connect(self._changed)
+        return frame
+
+    def _controller_card(self):
+        frame, layout = card()
+        layout.addWidget(section_title("Controller"))
+        grid = form_grid()
+        self.controller = QComboBox()
+        for key, text in CONTROLLERS.items():
+            self.controller.addItem(text, key)
+        grid.addWidget(label("Motor driven by"), 0, 0)
+        grid.addWidget(self.controller, 0, 1, 1, 3)
+        self.axis_label = label("Motor connected to")
+        self.axis = QComboBox()
+        self.axis.addItem("M0 (axis0)", 0)
+        self.axis.addItem("M1 (axis1)", 1)
+        grid.addWidget(self.axis_label, 1, 0)
+        grid.addWidget(self.axis, 1, 1)
+        self.letter_label = label("Motor command letter")
+        self.letter = QLineEdit("M")
+        self.letter.setMaxLength(1)
+        self.letter.setMaximumWidth(60)
+        self.letter_hint = label("as in the sketch's command.add('M', …); the bench firmware uses M", "muted", wrap=True)
+        grid.addWidget(self.letter_label, 2, 0)
+        grid.addWidget(self.letter, 2, 1)
+        grid.addWidget(self.letter_hint, 2, 2, 1, 2)
+        grid.addWidget(self._error_label("motor_letter"), 3, 1, 1, 3)
+        layout.addLayout(grid)
+        self.controller_info = label("", "muted", wrap=True)
+        layout.addWidget(self.controller_info)
+        self.controller.currentIndexChanged.connect(self._changed)
+        self.axis.currentIndexChanged.connect(self._changed)
+        self.letter.textChanged.connect(self._changed)
         return frame
 
     def _gearbox_card(self):
         frame, layout = card()
-        layout.addWidget(section_title("Gearbox and ODrive"))
+        layout.addWidget(section_title("Gearbox"))
         grid = form_grid()
         self.gear = NumberField(0.01, 10000, 1.0, decimals=3, step=1, suffix=": 1")
         grid.addWidget(label("Gear ratio"), 0, 0)
@@ -150,16 +208,10 @@ class SetupPage(QWidget):
         grid.addWidget(self.efficiency, 2, 1)
         grid.addWidget(label("leave 100 % if unknown", "muted"), 2, 2, 1, 2)
         grid.addWidget(self._error_label("efficiency_pct"), 3, 1, 1, 3)
-        self.axis = QComboBox()
-        self.axis.addItem("M0 (axis0)", 0)
-        self.axis.addItem("M1 (axis1)", 1)
-        grid.addWidget(label("Motor connected to"), 4, 0)
-        grid.addWidget(self.axis, 4, 1)
         layout.addLayout(grid)
         layout.addWidget(label("The weight calibration (Measure step) can measure the real gearbox efficiency.", "muted", wrap=True))
         self.gear.valueChanged.connect(self._changed)
         self.efficiency.valueChanged.connect(self._changed)
-        self.axis.currentIndexChanged.connect(self._changed)
         return frame
 
     def _limits_card(self):
@@ -179,7 +231,7 @@ class SetupPage(QWidget):
         grid.addWidget(self.speed_info, 2, 2, 1, 2)
         grid.addWidget(self._error_label("max_speed_rpm"), 3, 1, 1, 3)
         layout.addLayout(grid)
-        layout.addWidget(label("Every test stays inside these limits. The ODrive's own current limit still applies on top.",
+        layout.addWidget(label("Every test stays inside these limits. The controller's own current limit still applies on top.",
                                "muted", wrap=True))
         self.max_current.valueChanged.connect(self._changed)
         self.max_speed.valueChanged.connect(self._changed)
@@ -202,7 +254,7 @@ class SetupPage(QWidget):
         grid.addWidget(label("Readout smoothing"), 2, 0)
         grid.addWidget(self.smoothing, 2, 1)
         grid.addWidget(label("raw values are always recorded", "muted"), 2, 2, 1, 2)
-        self.watchdog = QCheckBox("Use the ODrive watchdog while the motor is on (recommended)")
+        self.watchdog = QCheckBox("Use the controller's watchdog while the motor is on (recommended)")
         grid.addWidget(self.watchdog, 3, 0, 1, 4)
         layout.addLayout(grid)
         self.unit.currentIndexChanged.connect(self._changed)
@@ -247,7 +299,12 @@ class SetupPage(QWidget):
         self.kt.setValue(profile.kt)
         self.gear.setValue(profile.gear_ratio)
         self.efficiency.setValue(profile.efficiency_pct)
-        self.axis.setCurrentIndex(profile.axis)
+        self.pole_pairs.setValue(profile.pole_pairs)
+        self.resistance.setValue(profile.phase_resistance_ohm)
+        self.inductance.setValue(profile.phase_inductance_uh)
+        self.controller.setCurrentIndex(max(0, self.controller.findData(profile.controller)))
+        self.axis.setCurrentIndex(profile.axis if profile.axis in (0, 1) else 0)
+        self.letter.setText(profile.motor_letter)
         self.max_current.setValue(profile.max_current_a)
         self.max_speed.setValue(profile.max_speed_rpm)
         self.unit.setCurrentText(profile.unit)
@@ -266,7 +323,12 @@ class SetupPage(QWidget):
         p.kt = self.kt.value()
         p.gear_ratio = self.gear.value()
         p.efficiency_pct = self.efficiency.value()
+        p.pole_pairs = int(round(self.pole_pairs.value()))
+        p.phase_resistance_ohm = self.resistance.value()
+        p.phase_inductance_uh = self.inductance.value()
+        p.controller = self.controller.currentData()
         p.axis = int(self.axis.currentData())
+        p.motor_letter = self.letter.text().strip()
         p.max_current_a = self.max_current.value()
         p.max_speed_rpm = self.max_speed.value()
         p.unit = self.unit.currentText()
@@ -328,6 +390,16 @@ class SetupPage(QWidget):
         profile = self.current_profile()
         self.kv.setEnabled(profile.kt_source == "kv")
         self.kt.setEnabled(profile.kt_source == "kt")
+        odrive = profile.controller == "odrive"
+        for widget in (self.axis_label, self.axis):
+            widget.setVisible(odrive)
+        for widget in (self.letter_label, self.letter, self.letter_hint):
+            widget.setVisible(not odrive)
+        self.controller_info.setText(
+            "Connects over the ODrive's own USB port; the motor and encoder must already be set up in odrivetool."
+            if odrive else
+            "Any board running a SimpleFOC sketch with Commander, over its USB port or a USB-serial adapter. Flash "
+            "the bench firmware (firmware/simplefoc_bench) for a watchdog, supply voltage and temperature.")
         problems = profile.validate()
         for key, widget in self.errors.items():
             message = problems.get(key, "")
@@ -335,7 +407,8 @@ class SetupPage(QWidget):
             widget.setVisible(bool(message))
         for key, field in (("kv", self.kv), ("kt", self.kt), ("gear_ratio", self.gear),
                            ("efficiency_pct", self.efficiency), ("max_current_a", self.max_current),
-                           ("max_speed_rpm", self.max_speed)):
+                           ("max_speed_rpm", self.max_speed), ("pole_pairs", self.pole_pairs),
+                           ("phase_resistance_ohm", self.resistance), ("phase_inductance_uh", self.inductance)):
             field.set_invalid(key in problems)
         self.next_button.setEnabled(not problems)
         if problems:

@@ -10,7 +10,7 @@ All values are at the actuator's output (after the gearbox) unless a name says m
   as gravity on an unbalanced output): Im(T / Ω) = ω J − K / ω. No differentiation of noisy speed
   is needed. J is MuJoCo's joint ``armature``.
 * Speed: the no-load speed gives the motor's back-EMF constant; with the phase resistance and
-  inductance the ODrive measured, that gives the torque-speed limit at any battery voltage.
+  inductance (from the controller or Setup), that gives the torque-speed limit at any battery voltage.
 * Backlash: torque cycled on a clamped output. The loaded parts of the loop give the gearbox
   stiffness; the gap between them at zero torque is the backlash.
 * Thermal: temperature at constant current fitted to T0 + ΔT (1 − e^(−t/τ)). The continuous

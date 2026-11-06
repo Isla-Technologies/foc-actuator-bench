@@ -54,22 +54,27 @@ What the values mean to a simulator:
 
 You need:
 
-- An **ODrive V3.6**, or a board running the same firmware such as the MKS ODrive S, with firmware
-  **0.5.x**. The motor and encoder must already be calibrated on it (they work in odrivetool). The
-  app reads the motor's resistance and inductance that this calibration measured.
+- A controller for the actuator:
+  - an **ODrive V3.6**, or a board running the same firmware such as the MKS ODrive S, with firmware
+    **0.5.x**. The motor and encoder must already be calibrated on it (they work in odrivetool). The
+    app reads the motor's resistance and inductance that this calibration measured; or
+  - a **SimpleFOC board** such as an ESP32 FOC driver, best with the bench firmware: see
+    [Measuring an actuator on a SimpleFOC board](simplefoc.md). Enter the motor's pole pairs, phase
+    resistance and inductance in Setup if the sketch doesn't set them.
 - A **DC supply**, ideally at the robot's battery voltage. The no-load speed test scales its result
   to the battery voltage you enter, but the closer the supply, the smaller the correction.
 - A way to **clamp the actuator** to the bench. The tests switch the motor on by themselves.
 - For the calibration: a **rigid arm** of known length and two or three **known weights**.
 - For the backlash test: a way to **lock the output** in both directions (bolt the output flange to
   the bench, or clamp the arm between two stops with no gap).
-- For the thermal test: the motor's **temperature sensor** wired to the ODrive and enabled
-  (`axisN.motor.motor_thermistor.config.enabled = True` with its coefficients, in odrivetool).
-  Without it the app falls back to the ODrive's own temperature, which describes the driver, not
-  the motor.
+- For the thermal test: the motor's **temperature sensor**, wired to the ODrive and enabled
+  (`axisN.motor.motor_thermistor.config.enabled = True` with its coefficients, in odrivetool), or
+  set up in the SimpleFOC bench firmware. Without it the app falls back to the driver's own
+  temperature, which describes the driver, not the motor.
 
-In **Setup**, enter the actuator's values. Set **Max output speed** to about 1.5 times the no-load
-speed you expect: the no-load speed test can't go faster than this limit.
+In **Setup**, make one profile per actuator and enter its values, including the controller it is
+on. Set **Max output speed** to about 1.5 times the no-load speed you expect: the no-load speed
+test can't go faster than this limit.
 
 ## The order to run the tests
 
@@ -184,7 +189,8 @@ back-EMF constant.
 its speed stops following the command; the app holds there, averages the speed, the current and the
 supply voltage, then slows down and does the same in the other direction. The speed it topped out at
 gives the motor's back-EMF constant (its real Kt, independent of the gearbox). With the phase
-resistance and inductance the ODrive measured in its motor calibration, the app then works out:
+resistance and inductance (measured by the ODrive in its motor calibration; for a SimpleFOC board,
+the sketch's values or those in Setup), the app then works out:
 
 - the **no-load speed** at the battery voltage you enter on the Overview: where the motor gives no
   torque at all;
@@ -282,14 +288,17 @@ The file also holds:
 
 ## Limitations
 
-- **The ODrive measures current, not torque.** The calibration turns current into torque with a
+- **The controller measures current, not torque.** The calibration turns current into torque with a
   few percent accuracy at the loads it was done with. At much higher currents motors saturate, so
   the real peak torque can be lower than the calculation; only a calibration with heavy weights, or
   a load cell, shows this.
-- **The no-load and corner speed depend on the driver.** Firmware 0.5.x gives the motor at most
-  80 % of the voltage space-vector modulation could. If the robot's drivers use more or less of the
-  battery voltage, the speeds scale with it. The export includes the motor's back-EMF constant,
-  resistance and inductance so they can be recalculated for another driver.
+- **The no-load and corner speed depend on the driver.** ODrive firmware 0.5.x gives the motor at
+  most 80 % of the voltage space-vector modulation could. A SimpleFOC board gives at most its
+  `voltage_limit`, and 1/√3 of the supply with space-vector modulation (1/2 with sine). The export
+  works the speeds out for the driver the actuator was measured on (`conditions` in the file says
+  which); if the robot's drivers use more or less of the battery voltage, the speeds scale with it.
+  The export includes the motor's back-EMF constant, resistance and inductance so they can be
+  recalculated for another driver.
 - **The corner speed is calculated, not measured.** Measuring torque at speed needs a second motor
   as a brake (a dynamometer). The calculation uses the standard motor model with the measured
   back-EMF, resistance and inductance, without field weakening.
@@ -301,7 +310,7 @@ The file also holds:
   the motor and the clamp: gearbox, bearings, output flange and the clamp itself.
 - **The thermal test heats a stalled motor.** At standstill the current flows mostly through one or
   two phases, so they get hotter than in a turning motor. The continuous current is therefore on the
-  safe side for a walking robot. With only the ODrive's temperature, it describes the driver, not
+  safe side for a walking robot. With only the driver's temperature, it describes the driver, not
   the motor.
 - **What the bench can't measure:** the control delay of the robot's own communication (CAN bus,
   computer) and the robot's battery sag under load. Measure those on the robot.
@@ -343,11 +352,12 @@ Luma-1 uses two actuator types. Make one profile for each:
 These reproduce the robot's current figures (3.0 and 1.36 N·m/A at the output) until the
 calibration replaces them. On the Overview, enter a battery voltage of 22.2 V (6S).
 
-The micro actuator normally runs on its own ESP32 SimpleFOC board. For the bench, connect its motor
-and its AS5047P encoder to an ODrive: firmware 0.5.x reads that encoder over SPI
-(`encoder.config.mode = ENCODER_MODE_SPI_ABS_AMS`). Everything mechanical (friction, inertia,
-backlash, stiffness, gear ratio) and the motor's own constants carry over to the SimpleFOC board.
-The no-load and corner speed depend on how much of the battery voltage that board uses; see
-Limitations.
+The micro actuator normally runs on its own ESP32 SimpleFOC board, and can be measured on it: flash
+the bench firmware with its AS5047P encoder selected (see [the SimpleFOC guide](simplefoc.md)) and
+choose **SimpleFOC board** in its profile. Its no-load and corner speed then come from the board it
+will run on. Measuring it on an ODrive also works (firmware 0.5.x reads the AS5047P over SPI,
+`encoder.config.mode = ENCODER_MODE_SPI_ABS_AMS`): everything mechanical (friction, inertia,
+backlash, stiffness, gear ratio) and the motor's own constants carry over, but the speeds then
+describe the ODrive's voltage; see Limitations.
 
 Export one model per actuator type and send both files.
