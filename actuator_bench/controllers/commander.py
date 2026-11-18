@@ -269,6 +269,10 @@ class CommanderLink:
                 return None
             if line.startswith(prefix):
                 payload = line[len(prefix):]
+                # If debug text got appended right after the prefix (e.g. BAMOT:Align sensor.), treat as debug note.
+                if payload.startswith(("MOT:", "CS:", "ERR-", "ESP32-", "SimpleFOC")):
+                    self._note(payload)
+                    continue
                 # A target reply is just a number after the letter; "MOT: Init" isn't one.
                 if not target_value or parse_number(payload) is not None or is_error(payload):
                     return payload

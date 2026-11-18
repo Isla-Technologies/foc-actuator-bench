@@ -41,15 +41,29 @@ motor that is controlled by voltage.
    package (Boards Manager, by Espressif) and the **Simple FOC** library 2.3 or newer (Library Manager).
 2. Open `firmware/simplefoc_bench/simplefoc_bench.ino`.
 3. Fill in the **CONFIGURE** block at the top:
-   - **Pins**: the PWM, enable and current-sense pins are specific to the board. Copy them from the
-     board's schematic, or from the example sketch that came with it: it has lines like
-     `BLDCDriver3PWM driver = BLDCDriver3PWM(…)` and `InlineCurrentSense current_sense = InlineCurrentSense(…)`.
-     The current-sense pins must be on the ESP32's ADC1 (GPIO 32–39).
+   - **Pins**: the firmware defaults match the **FOC_ESP32_V1.1 20A board** in
+     [this pinout and example](https://community.simplefoc.com/t/does-anybody-has-schematics-and-code-example-on-this-20a-ali-board/6398/4):
+     PWM A/B/C = GPIO 16/17/5, shared enable = GPIO 4, current sense A/B = GPIO 39/36,
+     and AS5047P CS = GPIO 13. Its SPI header uses SCK/MISO/MOSI = GPIO 18/19/23, which
+     are the ESP32's default SPI pins. Confirm your PCB is V1.1; do not use these assignments
+     for a different revision. For another board, copy the pin numbers from its schematic or
+     example sketch. The current-sense pins must be on the ESP32's ADC1 (GPIO 32–39).
    - **Current sensing**: the shunt resistance per phase and the amplifier's gain. "R020" printed on a
      shunt means 0.020 Ω; two in parallel make 0.010 Ω. INA240A2 amplifiers have a gain of 50.
-   - **Motor**: pole pairs (a BE4108 has 22 magnets: 11 pole pairs) and the alignment voltage (about
-     phase resistance × 3 A; 1 V is a safe start for a 4108-size motor).
+   - **Motor**: pole pairs (a BE4108 has 22 magnets: 11 pole pairs) and the alignment voltage. Start at
+     0.15 V after any driver failure; increase only in small steps after direction and phase wiring are verified.
+   - **Mechanical interference**: the firmware applies 10 ms and 5 ms low-pass filters to velocity and q/d current
+     feedback to reduce vibration and switching-noise effects without excessive phase lag. Adjust `VELOCITY_FILTER_TF` and
+     `CURRENT_FILTER_TF` in the sketch if the mechanism still needs more filtering; larger values add delay.
+     The first 500 ms of velocity telemetry after enabling is held at zero while the encoder estimate settles,
+     preventing a startup sample transient from tripping overspeed protection.
+   - **Position control**: the sketch explicitly uses conservative cascaded-loop gains
+     (`P_angle.P = 5`, velocity `P = 0.05`, `I = 0`, `D = 0`) instead of relying on library defaults.
+     The velocity integrator is initially disabled to prevent persistent current saturation while tuning.
+     Tune the position P gain only after stable low-current tests.
    - **Sensor**: uncomment the one you have and set its pins.
+     The AS5047P is configured for a conservative 1 MHz SPI clock to improve noise
+     tolerance; increase `SENSOR_SPI_CLOCK_HZ` only after stable operation is confirmed.
    - **Supply voltage**, and the optional supply-voltage divider and temperature sensors.
    - Then set `BOARD_PINS_CHECKED` to 1. Until then the sketch refuses to compile, so it can't run
      with wrong pins.
@@ -60,6 +74,15 @@ motor that is controlled by voltage.
    the motor twitches while it aligns, then `MOT: Ready.` appears. If it says `MOT: Init FOC failed`,
    check the sensor wiring, the pole pairs and the alignment voltage. **Close the Serial Monitor** before
    connecting the app: only one program can use the port.
+
+### Test the AS5047P by itself
+
+To check encoder readings without initializing or driving the motor, open
+`firmware/as5047p_encoder_test/as5047p_encoder_test.ino`, upload it to the ESP32, and open the Serial
+Monitor at **115200** baud. Slowly turn the encoder magnet by hand: the sketch prints the 14-bit count
+(0–16383) and angle in degrees every 100 ms. The count should change as the magnet turns and wrap near
+one full revolution. This test uses CS GPIO 13 and the ESP32 default SPI pins (SCK/MISO/MOSI = GPIO
+18/19/23).
 
 ## 3. Set up the app
 

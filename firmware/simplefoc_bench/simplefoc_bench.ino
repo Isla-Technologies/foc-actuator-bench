@@ -1,78 +1,104 @@
 // SimpleFOC bench firmware for FOC Actuator Bench.
 //
-// A SimpleFOC sketch for an ESP32 FOC driver board (three half bridges with inline current
-// sensing, e.g. the "ESP32 FOC 20A" boards with IR2104 gate drivers and INA240 amplifiers). The app
-// drives the motor through SimpleFOC's standard Commander motor command ('M'). The 'B' command adds
-// what a bench needs and plain Commander lacks:
+// A SimpleFOC sketch for an ESP32 FOC driver board (three half bridges with
+// inline current sensing, e.g. the "ESP32 FOC 20A" boards with IR2104 gate
+// drivers and INA240 amplifiers). The app drives the motor through SimpleFOC's
+// standard Commander motor command ('M'). The 'B' command adds what a bench
+// needs and plain Commander lacks:
 //
 //   BI          info: fw, board, pole pairs, current limits, sensors fitted
-//   BF          fast values: iq;iq_setpoint;velocity;angle   (A, A, rad/s, rad at the motor)
-//   BS          status: vbus;driver_temp;motor_temp;motor_status;faults;enabled
-//   BW<s>       watchdog timeout in seconds (0 = off): the motor switches off when the app goes quiet
-//   BK          feed the watchdog
-//   BO<rad/s>   overspeed trip (0 = off): SimpleFOC doesn't limit the speed in torque mode
-//   BC          clear the faults (replies with those that remain)
-//   BA          re-run the sensor alignment (the motor turns: keep the output free)
+//   BF          fast values: iq;iq_setpoint;velocity;angle   (A, A, rad/s, rad
+//   at the motor) BS          status:
+//   vbus;driver_temp;motor_temp;motor_status;faults;enabled BW<s> watchdog
+//   timeout in seconds (0 = off): the motor switches off when the app goes
+//   quiet BK          feed the watchdog BO<rad/s>   overspeed trip (0 = off):
+//   SimpleFOC doesn't limit the speed in torque mode BC          clear the
+//   faults (replies with those that remain) BA          re-run the sensor
+//   alignment (the motor turns: keep the output free)
 //
-// Needs the Arduino "Simple FOC" library 2.3.0 or newer (Library Manager) and the ESP32 board
-// package. Setup guide: docs/simplefoc.md in the app's folder.
+// Needs the Arduino "Simple FOC" library 2.3.0 or newer (Library Manager) and
+// the ESP32 board package. Setup guide: docs/simplefoc.md in the app's folder.
 
 #include <SimpleFOC.h>
 
 // ================================================================================================
 // CONFIGURE FOR YOUR BOARD, MOTOR AND SENSOR
 //
-// The pin numbers below are placeholders. Take the real ones from your board's schematic or the
-// example sketch that came with it (look for "BLDCDriver3PWM driver(...)" and
-// "InlineCurrentSense current_sense(...)"), then set BOARD_PINS_CHECKED to 1.
+// Pin assignments below match the FOC_ESP32_V1.1 board documented at:
+// https://community.simplefoc.com/t/does-anybody-has-schematics-and-code-example-on-this-20a-ali-board/6398/4
+// Verify the PCB revision before flashing a different board.
 // ================================================================================================
-#define BOARD_PINS_CHECKED 0
+#define BOARD_PINS_CHECKED 1
 
-#define BOARD_NAME "ESP32 FOC driver"
-#define SERIAL_BAUD 115200          // the app's Connect page must use the same rate
+#define BOARD_NAME "ESP32 FOC 20A V1.1"
+#define SERIAL_BAUD 115200 // the app's Connect page must use the same rate
 
-// --- Motor -------------------------------------------------------------------------------------
-#define POLE_PAIRS 11               // BE4108: 22 magnets = 11 pole pairs
-#define PHASE_RESISTANCE NOT_SET    // ohm, if you know it (else NOT_SET)
-#define MOTOR_KV NOT_SET            // rpm/V, if you know it (else NOT_SET)
-#define ALIGN_VOLTAGE 1.0           // V for the sensor alignment at start-up. About phase resistance x 3 A.
+// --- Motor
+// -------------------------------------------------------------------------------------
+#define POLE_PAIRS 11            // BE4108: 22 magnets = 11 pole pairs
+#define PHASE_RESISTANCE 0.193  // ohm, measured phase resistance
+#define MOTOR_KV 380             // rpm/V, if you know it (else NOT_SET)
+#define ALIGN_VOLTAGE                                                          \
+  0.5 // V for sensor alignment: start conservatively after the driver failure.
+// Low-pass filters for mechanical vibration and current-sense switching noise.
+// Increase these values for more filtering, at the cost of response delay.
+#define VELOCITY_FILTER_TF 0.01 // s: velocity feedback filter
+#define CURRENT_FILTER_TF 0.005 // s: q/d current feedback filters; keep inner-loop lag low
+// Conservative cascaded position-loop gains; tune upward only after stable testing.
+#define POSITION_P_GAIN 5.0
+#define VELOCITY_P_GAIN 0.05
+#define VELOCITY_I_GAIN 0.0
+#define VELOCITY_STARTUP_SETTLE_MS 500 // discard the encoder's first transient after enabling
 
-// --- Power stage -------------------------------------------------------------------------------
-#define PIN_PWM_A 32                // CHANGE: phase A PWM
-#define PIN_PWM_B 33                // CHANGE: phase B PWM
-#define PIN_PWM_C 25                // CHANGE: phase C PWM
-#define PIN_ENABLE_A NOT_SET        // CHANGE: gate driver enable (IR2104 SD), or NOT_SET
-#define PIN_ENABLE_B NOT_SET        //         per phase if the board has one each
-#define PIN_ENABLE_C NOT_SET
-#define SUPPLY_VOLTAGE 24.0         // V: your power supply (also reported when PIN_VBUS isn't fitted)
+// --- Power stage
+// -------------------------------------------------------------------------------
+#define PIN_PWM_A 16 // FOC_ESP32_V1.1 phase A
+#define PIN_PWM_B 17 // FOC_ESP32_V1.1 phase B
+#define PIN_PWM_C 5  // FOC_ESP32_V1.1 phase C
+#define PIN_ENABLE 4 // Shared gate-driver enable
+#define SUPPLY_VOLTAGE                                                         \
+  24.0 // V: your power supply (also reported when PIN_VBUS isn't fitted)
 
-// --- Current sensing (inline, phases A and B) --------------------------------------------------
-#define SHUNT_OHM 0.01              // CHANGE: the shunt per phase (two R020 in parallel = 0.01)
-#define AMP_GAIN 50.0               // INA240A1 = 20, A2 = 50, A3 = 100, A4 = 200
-#define PIN_CS_A 39                 // CHANGE: ADC pin of phase A's amplifier (use ADC1: GPIO 32-39)
-#define PIN_CS_B 36                 // CHANGE: ADC pin of phase B's amplifier
-#define HARD_CURRENT_LIMIT 10.0     // A: the most the app may ask for (also capped by what the sensors read)
+// --- Current sensing (inline, phases A and B)
+// --------------------------------------------------
+#define SHUNT_OHM                                                              \
+  0.01 // CHANGE: the shunt per phase (two R020 in parallel = 0.01)
+#define AMP_GAIN 50.0 // INA240A1 = 20, A2 = 50, A3 = 100, A4 = 200
+#define PIN_CS_A 39 // Phase A amplifier output (ADC1)
+#define PIN_CS_B 36 // Phase B amplifier output (ADC1)
+#define HARD_CURRENT_LIMIT                                                     \
+  15.0 // A: the most the app may ask for (also capped by what the sensors read)
 
-// --- Position sensor: uncomment one ------------------------------------------------------------
-#define SENSOR_AS5600               // I2C magnetic encoder
-// #define SENSOR_AS5047            // SPI magnetic encoder
-#define PIN_SDA 19                  // CHANGE (AS5600)
-#define PIN_SCL 18                  // CHANGE (AS5600)
-#define PIN_SENSOR_CS 5             // CHANGE (AS5047)
+// --- Position sensor: uncomment one
+// ------------------------------------------------------------
+// #define SENSOR_AS5600               // I2C magnetic encoder
+#define SENSOR_AS5047 // SPI magnetic encoder
+#if defined(SENSOR_AS5600)
+#define PIN_SDA 21 // AS5600 SDA on P2
+#define PIN_SCL 22 // AS5600 SCL on P2
+#elif defined(SENSOR_AS5047)
+#define PIN_SENSOR_CS 13 // AS5047P CS on P2; SPI uses SCK 18, MISO 19, MOSI 23
+#define SENSOR_SPI_CLOCK_HZ 1000000L // conservative clock for longer/noisier sensor wiring
+#endif
 
-// --- Optional sensors (-1 = not fitted) --------------------------------------------------------
-#define PIN_VBUS -1                 // ADC pin on a divider from the supply
-#define VBUS_DIVIDER 11.0           // supply volts per volt at the pin, e.g. 100k/10k = 11
-#define VBUS_MIN 10.0               // V: below this the motor is switched off (only if PIN_VBUS is fitted)
-#define VBUS_MAX 38.0               // V: above this too
-#define PIN_DRIVER_NTC -1           // ADC pin of an NTC on the power stage (10k NTC to GND, 10k to 3.3 V)
-#define PIN_MOTOR_NTC -1            // ADC pin of an NTC in the motor (same wiring)
+// --- Optional sensors (-1 = not fitted)
+// --------------------------------------------------------
+#define PIN_VBUS -1 // ADC pin on a divider from the supply
+#define VBUS_DIVIDER                                                           \
+  11.0 // supply volts per volt at the pin, e.g. 100k/10k = 11
+#define VBUS_MIN                                                               \
+  10.0 // V: below this the motor is switched off (only if PIN_VBUS is fitted)
+#define VBUS_MAX 38.0 // V: above this too
+#define PIN_DRIVER_NTC                                                         \
+  -1 // ADC pin of an NTC on the power stage (10k NTC to GND, 10k to 3.3 V)
+#define PIN_MOTOR_NTC -1 // ADC pin of an NTC in the motor (same wiring)
 #define NTC_BETA 3950.0
-#define TEMP_LIMIT 90.0             // degC: above this the motor is switched off
+#define TEMP_LIMIT 90.0 // degC: above this the motor is switched off
 // ================================================================================================
 
 #if !BOARD_PINS_CHECKED
-#error "Set your board's pins in the CONFIGURE block (see docs/simplefoc.md), then set BOARD_PINS_CHECKED to 1."
+#error                                                                         \
+    "Set your board's pins in the CONFIGURE block (see docs/simplefoc.md), then set BOARD_PINS_CHECKED to 1."
 #endif
 
 #define FIRMWARE_VERSION "1.0"
@@ -87,13 +113,16 @@
 #define FAULT_OVERSPEED 0x40
 
 BLDCMotor motor = BLDCMotor(POLE_PAIRS, PHASE_RESISTANCE, MOTOR_KV);
-BLDCDriver3PWM driver = BLDCDriver3PWM(PIN_PWM_A, PIN_PWM_B, PIN_PWM_C, PIN_ENABLE_A, PIN_ENABLE_B, PIN_ENABLE_C);
-InlineCurrentSense current_sense = InlineCurrentSense(SHUNT_OHM, AMP_GAIN, PIN_CS_A, PIN_CS_B, _NC);
+BLDCDriver3PWM driver =
+    BLDCDriver3PWM(PIN_PWM_A, PIN_PWM_B, PIN_PWM_C, PIN_ENABLE);
+InlineCurrentSense current_sense =
+    InlineCurrentSense(SHUNT_OHM, AMP_GAIN, PIN_CS_A, PIN_CS_B, _NC);
 
 #if defined(SENSOR_AS5600)
 MagneticSensorI2C sensor = MagneticSensorI2C(AS5600_I2C);
 #elif defined(SENSOR_AS5047)
-MagneticSensorSPI sensor = MagneticSensorSPI(AS5047_SPI, PIN_SENSOR_CS);
+MagneticSensorSPI sensor =
+    MagneticSensorSPI(AS5047_SPI, PIN_SENSOR_CS, SENSOR_SPI_CLOCK_HZ);
 #else
 #error "Choose a position sensor in the CONFIGURE block."
 #endif
@@ -105,42 +134,55 @@ const float SENSE_RANGE_A = 1.65f / (SHUNT_OHM * AMP_GAIN);
 const float MAX_CURRENT = min((float)HARD_CURRENT_LIMIT, 0.9f * SENSE_RANGE_A);
 
 uint8_t faults = 0;
-uint32_t watchdog_ms = 0;          // 0 = off
+uint32_t watchdog_ms = 0; // 0 = off
 uint32_t last_feed_ms = 0;
-float overspeed_rad_s = 0.0f;      // 0 = off
+float overspeed_rad_s = 0.0f; // 0 = off
+uint16_t overspeed_loops = 0;
 uint16_t over_current_loops = 0;
+uint32_t velocity_settle_until_ms = 0;
 float vbus = SUPPLY_VOLTAGE;
 float driver_temp = NAN;
 float motor_temp = NAN;
 uint32_t last_slow_ms = 0;
 
-// --- output helpers ----------------------------------------------------------------------------
+// --- output helpers
+// ----------------------------------------------------------------------------
 bool talking() { return command.verbose != VerboseMode::nothing; }
 
 void number(float value) { Serial.print(value, (int)command.decimal_places); }
 
 void reply_start(char sub) {
-  // Commander has printed 'B' already in machine-readable mode; the sub-command follows.
-  if (command.verbose == VerboseMode::machine_readable) Serial.print(sub);
+  // Commander has printed 'B' already in machine-readable mode; the sub-command
+  // follows.
+  if (command.verbose == VerboseMode::machine_readable)
+    Serial.print(sub);
 }
 
-bool is_get(const char* value) { return value[0] == '\n' || value[0] == '\r' || value[0] == '\0'; }
+bool is_get(const char *value) {
+  return value[0] == '\n' || value[0] == '\r' || value[0] == '\0';
+}
 
-// --- sensors -----------------------------------------------------------------------------------
+// --- sensors
+// -----------------------------------------------------------------------------------
 float read_ntc(int pin) {
   float mv = analogReadMilliVolts(pin);
-  if (mv <= 1.0f || mv >= 3299.0f) return NAN;   // open or shorted
-  float r = 10000.0f * mv / (3300.0f - mv);       // NTC to GND, 10k to 3.3 V
+  if (mv <= 1.0f || mv >= 3299.0f)
+    return NAN;                             // open or shorted
+  float r = 10000.0f * mv / (3300.0f - mv); // NTC to GND, 10k to 3.3 V
   return 1.0f / (logf(r / 10000.0f) / NTC_BETA + 1.0f / 298.15f) - 273.15f;
 }
 
 void read_slow_sensors() {
-  if (PIN_VBUS >= 0) vbus = analogReadMilliVolts(PIN_VBUS) / 1000.0f * VBUS_DIVIDER;
-  if (PIN_DRIVER_NTC >= 0) driver_temp = read_ntc(PIN_DRIVER_NTC);
-  if (PIN_MOTOR_NTC >= 0) motor_temp = read_ntc(PIN_MOTOR_NTC);
+  if (PIN_VBUS >= 0)
+    vbus = analogReadMilliVolts(PIN_VBUS) / 1000.0f * VBUS_DIVIDER;
+  if (PIN_DRIVER_NTC >= 0)
+    driver_temp = read_ntc(PIN_DRIVER_NTC);
+  if (PIN_MOTOR_NTC >= 0)
+    motor_temp = read_ntc(PIN_MOTOR_NTC);
 }
 
-// --- safety ------------------------------------------------------------------------------------
+// --- safety
+// ------------------------------------------------------------------------------------
 void trip(uint8_t fault) {
   faults |= fault;
   motor.disable();
@@ -148,9 +190,12 @@ void trip(uint8_t fault) {
 
 uint8_t check_conditions() {
   uint8_t found = 0;
-  if (PIN_VBUS >= 0 && vbus < VBUS_MIN) found |= FAULT_UNDER_VOLTAGE;
-  if (PIN_VBUS >= 0 && vbus > VBUS_MAX) found |= FAULT_OVER_VOLTAGE;
-  if (driver_temp > TEMP_LIMIT || motor_temp > TEMP_LIMIT) found |= FAULT_OVER_TEMPERATURE;
+  if (PIN_VBUS >= 0 && vbus < VBUS_MIN)
+    found |= FAULT_UNDER_VOLTAGE;
+  if (PIN_VBUS >= 0 && vbus > VBUS_MAX)
+    found |= FAULT_OVER_VOLTAGE;
+  if (driver_temp > TEMP_LIMIT || motor_temp > TEMP_LIMIT)
+    found |= FAULT_OVER_TEMPERATURE;
   return found;
 }
 
@@ -160,126 +205,179 @@ void safety() {
     last_slow_ms = now;
     read_slow_sensors();
     uint8_t found = check_conditions();
-    if (found && motor.enabled) trip(found);
+    if (found && motor.enabled)
+      trip(found);
   }
   if (!motor.enabled) {
     over_current_loops = 0;
+    overspeed_loops = 0;
     return;
   }
-  if (watchdog_ms && now - last_feed_ms > watchdog_ms) trip(FAULT_WATCHDOG);
-  if (overspeed_rad_s > 0 && fabsf(motor.shaft_velocity) > overspeed_rad_s) trip(FAULT_OVERSPEED);
-  over_current_loops = fabsf(motor.current.q) > 1.3f * MAX_CURRENT ? over_current_loops + 1 : 0;
-  if (over_current_loops > 20) trip(FAULT_OVER_CURRENT);
-  if (faults) motor.disable();
+  // Watchdog: allow 500ms grace margin so brief OS/USB serial jitter doesn't trip it
+  if (watchdog_ms && now - last_feed_ms > (watchdog_ms + 500))
+    trip(FAULT_WATCHDOG);
+
+  // Overspeed: require sustained speed above limit (~15-20ms) instead of a single noise glitch.
+  // This check remains active immediately after enabling; startup filtering must not hide a runaway.
+  if (overspeed_rad_s > 0 && fabsf(motor.shaft_velocity) > (1.15f * overspeed_rad_s)) {
+    overspeed_loops++;
+    if (overspeed_loops > 60)
+      trip(FAULT_OVERSPEED);
+  } else {
+    overspeed_loops = 0;
+  }
+
+  // Overcurrent: require sustained overcurrent (~20ms) and 1.5x margin to avoid tripping on switching noise
+  if (fabsf(motor.current.q) > 1.5f * MAX_CURRENT) {
+    over_current_loops++;
+    if (over_current_loops > 100)
+      trip(FAULT_OVER_CURRENT);
+  } else {
+    over_current_loops = 0;
+  }
+
+  if (faults)
+    motor.disable();
 }
 
-// --- commands ----------------------------------------------------------------------------------
-void do_motor(char* cmd) {
-  // Never switch on with faults, and never above the current the sensors can measure.
+// --- commands
+// ----------------------------------------------------------------------------------
+void do_motor(char *cmd) {
+  last_feed_ms = millis(); // Any incoming motor command proves communication is alive
+  if (cmd[0] == 'E' && !is_get(cmd + 1) && atof(cmd + 1) != 0)
+    velocity_settle_until_ms = last_feed_ms + VELOCITY_STARTUP_SETTLE_MS;
+  // Never switch on with faults, and never above the current the sensors can
+  // measure.
   if (faults && cmd[0] == 'E' && !is_get(cmd + 1) && atof(cmd + 1) != 0) {
     char off[] = "E0\n";
     command.motor(&motor, off);
     return;
   }
-  if (cmd[0] == 'L' && cmd[1] == 'C' && !is_get(cmd + 2) && atof(cmd + 2) > MAX_CURRENT) {
+  if (cmd[0] == 'L' && cmd[1] == 'C' && !is_get(cmd + 2) &&
+      atof(cmd + 2) > MAX_CURRENT) {
     char limited[20];
     snprintf(limited, sizeof(limited), "LC%.3f\n", MAX_CURRENT);
     command.motor(&motor, limited);
     return;
   }
-  if (cmd[0] == 'E' && !is_get(cmd + 1) && atof(cmd + 1) != 0) last_feed_ms = millis();
   command.motor(&motor, cmd);
 }
 
-void do_bench(char* cmd) {
+void do_bench(char *cmd) {
+  last_feed_ms = millis(); // Any incoming bench command (e.g. fast telemetry BF) feeds the watchdog
   char sub = cmd[0];
-  const char* value = cmd + 1;
-  if (!talking()) return;
+  const char *value = cmd + 1;
+  if (!talking())
+    return;
   reply_start(sub);
   switch (sub) {
-    case 'I':
-      Serial.print("fw=" FIRMWARE_VERSION ";board=" BOARD_NAME ";pp=");
-      Serial.print(POLE_PAIRS);
-      Serial.print(";imax=");
-      number(MAX_CURRENT);
-      Serial.print(";isense=");
-      number(SENSE_RANGE_A);
-      Serial.print(PIN_VBUS >= 0 ? ";vbus=measured" : ";vbus=set");
-      Serial.print(PIN_DRIVER_NTC >= 0 ? ";temp=1" : ";temp=0");
-      Serial.print(PIN_MOTOR_NTC >= 0 ? ";mtemp=1" : ";mtemp=0");
+  case 'I':
+    Serial.print("fw=" FIRMWARE_VERSION ";board=" BOARD_NAME ";pp=");
+    Serial.print(POLE_PAIRS);
+    Serial.print(";imax=");
+    number(MAX_CURRENT);
+    Serial.print(";isense=");
+    number(SENSE_RANGE_A);
+    Serial.print(PIN_VBUS >= 0 ? ";vbus=measured" : ";vbus=set");
+    Serial.print(PIN_DRIVER_NTC >= 0 ? ";temp=1" : ";temp=0");
+    Serial.print(PIN_MOTOR_NTC >= 0 ? ";mtemp=1" : ";mtemp=0");
 #if defined(ESP32)
-      Serial.print(";id=");
-      Serial.print((uint32_t)(ESP.getEfuseMac() >> 32), HEX);
-      Serial.print((uint32_t)ESP.getEfuseMac(), HEX);
+    Serial.print(";id=");
+    Serial.print((uint32_t)(ESP.getEfuseMac() >> 32), HEX);
+    Serial.print((uint32_t)ESP.getEfuseMac(), HEX);
 #endif
-      Serial.println();
-      break;
-    case 'F':
-      number(motor.current.q); Serial.print(';');
-      number(motor.current_sp); Serial.print(';');
-      number(motor.shaft_velocity); Serial.print(';');
-      number(motor.shaft_angle); Serial.println();
-      break;
-    case 'S':
-      number(vbus); Serial.print(';');
-      number(driver_temp); Serial.print(';');
-      number(motor_temp); Serial.print(';');
-      Serial.print((int)motor.motor_status); Serial.print(';');
-      Serial.print((int)faults); Serial.print(';');
-      Serial.println((int)motor.enabled);
-      break;
-    case 'W':
-      if (!is_get(value)) {
-        float seconds = atof(value);
-        watchdog_ms = seconds > 0 ? (uint32_t)(seconds * 1000.0f) : 0;
-        last_feed_ms = millis();
-      }
-      number(watchdog_ms / 1000.0f); Serial.println();
-      break;
-    case 'K':
+    Serial.println();
+    break;
+  case 'F':
+    number(motor.current.q);
+    Serial.print(';');
+    number(motor.current_sp);
+    Serial.print(';');
+    number(millis() < velocity_settle_until_ms ? 0.0f : motor.shaft_velocity);
+    Serial.print(';');
+    number(motor.shaft_angle);
+    Serial.println();
+    break;
+  case 'S':
+    number(vbus);
+    Serial.print(';');
+    number(driver_temp);
+    Serial.print(';');
+    number(motor_temp);
+    Serial.print(';');
+    Serial.print((int)motor.motor_status);
+    Serial.print(';');
+    Serial.print((int)faults);
+    Serial.print(';');
+    Serial.println((int)motor.enabled);
+    break;
+  case 'W':
+    if (!is_get(value)) {
+      float seconds = atof(value);
+      watchdog_ms = seconds > 0 ? (uint32_t)(seconds * 1000.0f) : 0;
       last_feed_ms = millis();
-      Serial.println(1);
-      break;
-    case 'O':
-      if (!is_get(value)) overspeed_rad_s = max(0.0f, (float)atof(value));
-      number(overspeed_rad_s); Serial.println();
-      break;
-    case 'C':
-      read_slow_sensors();
-      faults = check_conditions();
-      if (motor.motor_status != FOCMotorStatus::motor_ready) faults |= FAULT_START_UP;
-      Serial.println((int)faults);
-      break;
-    case 'A': {
-      motor.disable();
-      watchdog_ms = 0;
-      motor.sensor_direction = Direction::UNKNOWN;
-      motor.zero_electric_angle = NOT_SET;
-      int ok = motor.initFOC();
-      motor.disable();
-      if (ok) faults &= ~FAULT_START_UP; else faults |= FAULT_START_UP;
-      Serial.println(ok ? 1 : 0);
-      break;
     }
-    default:
-      Serial.println("err");
+    number(watchdog_ms / 1000.0f);
+    Serial.println();
+    break;
+  case 'K':
+    last_feed_ms = millis();
+    Serial.println(1);
+    break;
+  case 'O':
+    if (!is_get(value))
+      overspeed_rad_s = max(0.0f, (float)atof(value));
+    number(overspeed_rad_s);
+    Serial.println();
+    break;
+  case 'C':
+    read_slow_sensors();
+    faults = check_conditions();
+    if (motor.motor_status != FOCMotorStatus::motor_ready)
+      faults |= FAULT_START_UP;
+    Serial.println((int)faults);
+    break;
+  case 'A': {
+    motor.disable();
+    watchdog_ms = 0;
+    // Let SimpleFOC determine the sensor direction relative to the phase order.
+    // Encoder rotation direction alone is not sufficient for safe commutation.
+    motor.sensor_direction = Direction::UNKNOWN;
+    motor.zero_electric_angle = NOT_SET;
+    SimpleFOCDebug::enable(NULL);
+    motor.linkCurrentSense(nullptr); // avoid double gain inversion in driver_align
+    int ok = motor.initFOC();
+    motor.linkCurrentSense(&current_sense);
+    SimpleFOCDebug::enable(&Serial);
+    motor.disable();
+    if (ok)
+      faults &= ~FAULT_START_UP;
+    else
+      faults |= FAULT_START_UP;
+    Serial.println(ok ? 1 : 0);
+    break;
+  }
+  default:
+    Serial.println("err");
   }
 }
 
-void on_motor(char* cmd) { do_motor(cmd); }
-void on_bench(char* cmd) { do_bench(cmd); }
+void on_motor(char *cmd) { do_motor(cmd); }
+void on_bench(char *cmd) { do_bench(cmd); }
 
-// --- setup and loop ----------------------------------------------------------------------------
+// --- setup and loop
+// ----------------------------------------------------------------------------
 void setup() {
   Serial.begin(SERIAL_BAUD);
-  SimpleFOCDebug::enable(&Serial);  // start-up messages; the app skips them
+  SimpleFOCDebug::enable(&Serial); // start-up messages; the app skips them
 
 #if defined(SENSOR_AS5600)
   Wire.begin(PIN_SDA, PIN_SCL);
   Wire.setClock(400000);
   sensor.init(&Wire);
 #else
-  sensor.init();
+  SPI.begin(18, 19, 23, PIN_SENSOR_CS);
+  sensor.init(&SPI);
 #endif
   motor.linkSensor(&sensor);
 
@@ -292,18 +390,35 @@ void setup() {
   motor.torque_controller = TorqueControlType::foc_current;
   motor.controller = MotionControlType::torque;
   motor.foc_modulation = FOCModulationType::SpaceVectorPWM;
-  motor.voltage_limit = SUPPLY_VOLTAGE / _SQRT3;  // all that space-vector PWM can give
+  motor.voltage_limit =
+      SUPPLY_VOLTAGE / _SQRT3; // all that space-vector PWM can give
   motor.voltage_sensor_align = ALIGN_VOLTAGE;
-  motor.current_limit = min(1.0f, MAX_CURRENT);   // the app sets its own when it switches the motor on
+  motor.current_limit = min(
+      1.0f, MAX_CURRENT); // the app sets its own when it switches the motor on
   motor.velocity_limit = 20.0f;
-  motor.LPF_velocity.Tf = 0.01f;
+  motor.LPF_velocity.Tf = VELOCITY_FILTER_TF;
+  motor.P_angle.P = POSITION_P_GAIN;
+  motor.PID_velocity.P = VELOCITY_P_GAIN;
+  motor.PID_velocity.I = VELOCITY_I_GAIN;
+  motor.PID_velocity.D = 0.0f;
+
+  // Current control PI gains and filters (lowered for low-resistance BLDC to prevent buzzing/oscillation)
+  motor.PID_current_q.P = 0.05f;
+  motor.PID_current_q.I = 10.0f;
+  motor.PID_current_d.P = 0.05f;
+  motor.PID_current_d.I = 10.0f;
+  motor.LPF_current_q.Tf = CURRENT_FILTER_TF;
+  motor.LPF_current_d.Tf = CURRENT_FILTER_TF;
 
   motor.init();
   current_sense.init();
   motor.linkCurrentSense(&current_sense);
-  if (!motor.initFOC()) faults |= FAULT_START_UP;
+  // Determine direction relative to the installed phase sequence during alignment.
+  motor.sensor_direction = Direction::UNKNOWN;
+  if (!motor.initFOC())
+    faults |= FAULT_START_UP;
   motor.target = 0;
-  motor.disable();  // the app switches it on
+  motor.disable(); // the app switches it on
 
   command.add('M', on_motor, "motor");
   command.add('B', on_bench, "bench");
@@ -313,7 +428,7 @@ void setup() {
 
 void loop() {
   motor.loopFOC();
-  motor.move();     // no argument: the target is what Commander set
+  motor.move(); // no argument: the target is what Commander set
   safety();
   command.run();
 }

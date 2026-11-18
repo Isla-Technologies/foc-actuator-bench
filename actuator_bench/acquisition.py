@@ -311,6 +311,11 @@ class AcquisitionWorker:
         self._last_feed = -math.inf
         self._pos_zero = 0.0
         self._position_target = 0.0
+        self._cmd_position = 0.0
+        self._profile_vel = 0.0
+        self._target_speed = 0.0
+        self._cmd_speed = 0.0
+        self._last_profile_t = 0.0
         self._armed_vel_limit = math.inf
         self._overspeed_count = 0
         self._failures = 0
@@ -502,6 +507,8 @@ class AcquisitionWorker:
             return
         if self._proc is not None:
             self._update_procedure(sample)
+        elif self.armed and self._dev is not None:
+            self._update_manual_profile(now)
         if now - self._last_emit >= self._emit_interval:
             self._flush(now)
 
@@ -682,6 +689,12 @@ class AcquisitionWorker:
         self._last_feed = self._clock()
         if mode == ControlMode.POSITION and self._latest is not None:
             self._position_target = self._latest.pos
+            self._cmd_position = self._latest.pos
+            self._profile_vel = 0.0
+        elif mode == ControlMode.VELOCITY:
+            self._target_speed = 0.0
+            self._cmd_speed = 0.0
+        self._last_profile_t = self._clock()
         self._emit("on_armed", True, mode)
 
     def _do_arm(self, mode: ControlMode) -> None:
@@ -766,19 +779,58 @@ class AcquisitionWorker:
             return
         turns_s = self.model.motor_turns_per_s_from_output_rpm(rpm)
         limit = self.limits.max_motor_speed
-        self._dev.set_velocity(max(-limit, min(limit, turns_s)))
+        self._target_speed = max(-limit, min(limit, turns_s))
 
     def _do_set_angle(self, angle_deg: float) -> None:
         if not self._manual_ok(ControlMode.POSITION):
             return
         self._position_target = self._pos_zero + self.model.motor_turns_from_output_deg(angle_deg)
-        self._dev.set_position(self._position_target, 0.0)
 
     def _do_jog(self, delta_deg: float) -> None:
         if not self._manual_ok(ControlMode.POSITION):
             return
         self._position_target += self.model.motor_turns_from_output_deg(delta_deg)
-        self._dev.set_position(self._position_target, 0.0)
+
+    def _update_manual_profile(self, now: float) -> None:
+        if not self.armed or self._proc is not None or self._dev is None:
+            return
+        dt = now - self._last_profile_t
+        self._last_profile_t = now
+        if dt <= 0.0 or dt > 0.2:
+            dt = 0.02
+
+        # Smooth acceleration in motor turns/s^2 (reaches full speed smoothly in ~1.5 sec)
+        max_accel = max(0.5, self.limits.max_motor_speed * 1.0)
+
+        if self.armed_mode == ControlMode.VELOCITY:
+            if abs(self._target_speed - self._cmd_speed) > 1e-4:
+                step = max_accel * dt
+                if abs(self._target_speed - self._cmd_speed) <= step:
+                    self._cmd_speed = self._target_speed
+                else:
+                    self._cmd_speed += math.copysign(step, self._target_speed - self._cmd_speed)
+                self._dev.set_velocity(self._cmd_speed)
+
+        elif self.armed_mode == ControlMode.POSITION:
+            dist = self._position_target - self._cmd_position
+            if abs(dist) < 1e-4 and abs(self._profile_vel) < 1e-3:
+                if abs(self._cmd_position - self._position_target) > 1e-5:
+                    self._cmd_position = self._position_target
+                    self._profile_vel = 0.0
+                    self._dev.set_position(self._cmd_position, 0.0)
+            else:
+                v_stop = math.sqrt(2.0 * max_accel * abs(dist))
+                v_limit = min(v_stop, self.limits.max_motor_speed)
+                v_target = math.copysign(v_limit, dist)
+
+                dv = max_accel * dt
+                if abs(v_target - self._profile_vel) <= dv:
+                    self._profile_vel = v_target
+                else:
+                    self._profile_vel += math.copysign(dv, v_target - self._profile_vel)
+
+                self._cmd_position += self._profile_vel * dt
+                self._dev.set_position(self._cmd_position, 0.0)
 
     def _do_zero_angle(self) -> None:
         if self._latest is not None:

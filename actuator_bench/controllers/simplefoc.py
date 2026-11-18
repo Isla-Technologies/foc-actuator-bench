@@ -507,6 +507,15 @@ class SimpleFOCMotor(MotorController):
             raise BackendError("plain SimpleFOC sketches align their sensor when the board starts; reset the board "
                                "with the output free to run it again")
         self._watchdog_on = False
-        reply = self._ask(self.bench + "A", timeout=20.0)
-        if parse_number(reply or "") != 1:
-            raise BackendError("the sensor alignment failed; check the sensor and motor wiring and free the output")
+        try:
+            reply = self._ask(self.bench + "A", timeout=20.0)
+        except BackendError:
+            reply = None
+        if parse_number(reply or "") == 1:
+            return
+        # A long alignment can lose the custom BA1 reply amid debug output. Only
+        # accept that case when the board independently reports ready and fault-free.
+        status = self._status()
+        if status == STATUS_READY and not self.read_errors():
+            return
+        raise BackendError("the sensor alignment failed; check the sensor and motor wiring and free the output")
